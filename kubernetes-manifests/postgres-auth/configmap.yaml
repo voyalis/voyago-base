@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-auth-config
+  labels:
+    tier: database
+    app: voyago-auth # Uygulama/servis etiketi
+    component: postgresql # Bileşen etiketi
+data:
+  POSTGRES_DB: authdb
+  POSTGRES_USER: authuser

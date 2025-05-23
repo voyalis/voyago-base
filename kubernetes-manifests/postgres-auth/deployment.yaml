@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-auth-deployment
+  labels:
+    tier: database
+    app: voyago-auth
+    component: postgresql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      tier: database
+      app: voyago-auth
+      component: postgresql
+  template:
+    metadata:
+      labels:
+        tier: database
+        app: voyago-auth
+        component: postgresql
+    spec:
+      automountServiceAccountToken: false # GÜVENLİK İYİLEŞTİRMESİ
+      serviceAccountName: default # Veya özel bir service account
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: postgres
+          image: postgres:15-alpine # Spesifik ve güncel bir versiyon
+          imagePullPolicy: "IfNotPresent"
+          ports:
+            - containerPort: 5432
+              name: postgresql
+          envFrom:
+            - configMapRef:
+                name: postgres-auth-config
+            - secretRef:
+                name: postgres-auth-secret
+          resources: # KAYNAK TANIMLARI EKLENDİ
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+              subPath: postgres
+          livenessProbe:
+            tcpSocket:
+              port: 5432
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "authuser", "-d", "authdb"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3 # Başarısız deneme sayısı sonrası pod unhealthy olur
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: postgres-auth-pvc

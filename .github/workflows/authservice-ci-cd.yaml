@@ -1,0 +1,168 @@
+name: AuthService CI/CD
+
+on:
+  push:
+    branches:
+      - main # Veya develop gibi ana geliştirme branch'iniz
+    paths: # Sadece authservice veya ilgili dosyalarda değişiklik olduğunda çalışsın
+      - 'src/authservice/**'
+      - '.github/workflows/authservice-ci-cd.yaml'
+      - 'skaffold.yaml' # Skaffold konfigürasyonu değişirse
+      - 'kubernetes-manifests/authservice.yaml'
+      - 'kubernetes-manifests/postgres-auth/**'
+      - 'kubernetes-manifests/auth-jwt-secret.yaml'
+  pull_request:
+    branches:
+      - main # Veya develop
+    paths:
+      - 'src/authservice/**'
+
+env:
+  # GitHub Container Registry (GHCR) kullanacağız
+  REGISTRY: ghcr.io
+  # İmaj adı: ghcr.io/KULLANICI_ADINIZ/PROJE_ADINIZ/auth-service
+  # github.repository otomatik olarak KULLANICI_ADINIZ/PROJE_ADINIZ şeklinde gelir
+  IMAGE_NAME: ${{ github.repository }}/auth-service
+
+jobs:
+  test:
+    name: Run Go Tests
+    runs-on: ubuntu-latest
+    defaults: # Job içindeki tüm run komutlarının çalışma dizinini belirler
+      run:
+        working-directory: ./src/authservice # Testleri authservice dizininde çalıştır
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5 # En güncel versiyonu kullanmak iyidir
+        with:
+          go-version: '1.23' # projenizdeki go versiyonu
+          cache: true # Go modüllerini cache'ler
+
+      - name: Run Go Tidy (Check formatting and dependencies)
+        run: |
+          go mod tidy
+          # if [[ -n $(git status -s) ]]; then 
+          #   echo "go.mod or go.sum files are not up to date, please run 'go mod tidy' locally and commit."
+          #   exit 1
+          # fi
+          # Yukarıdaki kontrolü isteğe bağlı olarak ekleyebilirsiniz.
+
+      - name: Run tests
+        run: go test -v -race ./... # authservice içindeki tüm testleri çalıştırır
+
+  build-and-push:
+    name: Build & Push Docker Image
+    needs: test # test job'ı başarılı olursa çalışır
+    runs-on: ubuntu-latest
+    permissions: # GHCR'ye push yapabilmek için
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }} # GitHub Actions'ı tetikleyen kullanıcı
+          password: ${{ secrets.GITHUB_TOKEN }} # Otomatik olarak sağlanan token
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: | # İmaj etiketleri
+            type=sha,format=long,prefix= # Commit SHA'sı (örn: git-a1b2c3d4)
+            type=raw,value=latest,enable={{is_default_branch}} # Sadece main branch ise latest etiketi
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./src/authservice # Dockerfile'ın bulunduğu dizin
+          file: ./src/authservice/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha # GitHub Actions cache'ini kullan
+          cache-to: type=gha,mode=max
+
+  deploy-to-minikube:
+    name: Deploy to Staging (Minikube on Runner)
+    needs: build-and-push # build-and-push job'ı başarılı olursa çalışır
+    if: github.ref == 'refs/heads/main' # Sadece main branch'e push yapıldığında deploy et
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Minikube
+        uses: medyagh/setup-minikube@latest # Alternatif bir minikube action
+        # uses: manusa/actions-setup-minikube@v2.9.0 # Diğer bir popüler minikube action
+        # Veya GPT'nin önerdiği: manuelmeraz/minikube-action@v3.0.1
+        # Bu action'ların versiyonlarını ve parametrelerini kontrol edin.
+
+      - name: Get image name with SHA
+        id: image_tag
+        run: |
+          IMAGE_WITH_SHA="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::7}"
+          echo "IMAGE_TAG_SHA=${IMAGE_WITH_SHA}" >> $GITHUB_OUTPUT
+          echo "Deploying image: ${IMAGE_WITH_SHA}"
+
+      - name: Deploy to Minikube using Skaffold
+        run: |
+          # Minikube'ün Docker daemon'ını kullanması için (imajı tekrar çekmemesi için)
+          eval $(minikube -p minikube docker-env)
+          
+          # Skaffold'un GHCR'den imajı çekmesi için Docker config'e ihtiyaç olabilir,
+          # veya Skaffold'un lokalde build ettiği imajı kullanmasını sağlayabiliriz.
+          # Şimdilik GHCR'ye push ettiğimiz imajı kullanacağını varsayalım.
+          # Skaffold, build.artifacts.image tanımındaki ismi,
+          # CI'da build edilen ve pushlanan tam imaj adıyla değiştirmeli.
+          # Bu genellikle Skaffold'un imajları etiketleme stratejisiyle veya --images parametresiyle yapılır.
+          # Ya da Kubernetes manifestindeki imaj adını direkt güncelleyebiliriz.
+
+          # Yöntem 1: Kubernetes manifestini direkt güncelleme (Skaffold deploy kullanmadan)
+          # kubectl config use-context minikube # setup-minikube action bunu yapmalı
+          # sed -i 's|image: auth-service|image: ${{ steps.image_tag.outputs.IMAGE_TAG_SHA }}|g' kubernetes-manifests/authservice.yaml
+          # kubectl apply -f kubernetes-manifests/postgres-auth/configmap.yaml
+          # kubectl apply -f kubernetes-manifests/postgres-auth/secret.yaml
+          # kubectl apply -f kubernetes-manifests/auth-jwt-secret.yaml
+          # kubectl apply -f kubernetes-manifests/postgres-auth/pvc.yaml
+          # kubectl apply -f kubernetes-manifests/postgres-auth/deployment.yaml
+          # kubectl apply -f kubernetes-manifests/postgres-auth/service.yaml
+          # kubectl apply -f kubernetes-manifests/authservice.yaml
+          # kubectl rollout status deployment/authservice --timeout=120s
+          # kubectl rollout status deployment/postgres-auth-deployment --timeout=120s
+
+          # Yöntem 2: Skaffold run ile (skaffold.yaml'ın imajları doğru alması lazım)
+          # Skaffold'un GHCR'ye erişimi için Docker config'i ayarlamamız gerekebilir.
+          # En basit yol, Skaffold'un build adımını CI'da da kullanmak ve build edilen imajı deploy etmektir.
+          # Ya da Skaffold'a build etmemesini, sadece deploy etmesini ve imaj adını override etmesini söyleyebiliriz.
+          
+          echo "Deploying image: ${{ steps.image_tag.outputs.IMAGE_TAG_SHA }}"
+          skaffold run --images auth-service=${{ steps.image_tag.outputs.IMAGE_TAG_SHA }} \
+                       --kube-context minikube \
+                       --default-repo="" \
+                       --skip-tests # Testleri zaten yaptık
+          # --default-repo="" Skaffold'un imaj adlarına repo eklemesini engeller
+          # Skaffold.yaml içindeki image: auth-service yerine tam ghcr.io/.../auth-service:etiket kullanılıyorsa
+          # bu override'a gerek kalmayabilir, sadece build edilen doğru etiketli imajın kullanılması sağlanmalı.
+
+      - name: Verify Deployments
+        if: success() # Sadece deploy başarılıysa
+        run: |
+          echo "Waiting for pods to be ready..."
+          sleep 30 # Podların başlaması için biraz bekleme süresi
+          kubectl get pods
+          kubectl get svc authservice postgres-auth-svc
+          kubectl logs deployment/authservice --tail=50
+          kubectl logs deployment/postgres-auth-deployment --tail=50
+          

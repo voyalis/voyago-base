@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-auth-svc # AuthService bu isimle DB'ye ulaşacak
+  labels:
+    tier: database
+    app: voyago-auth
+    component: postgresql
+spec:
+  ports:
+    - port: 5432       # Servisin cluster içindeki portu
+      targetPort: 5432   # Pod'un containerPort'u (veya porta verdiğimiz isim: postgresql)
+      protocol: TCP
+  selector:
+    tier: database     # postgres-auth-deployment.yaml'daki pod etiketleriyle eşleşmeli
+    app: voyago-auth
+    component: postgresql
+  type: ClusterIP # Sadece cluster içinden erişilebilir
