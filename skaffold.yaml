@@ -5,7 +5,7 @@ metadata:
   name: voyago-base
 build:
   artifacts:
-    - image: ghcr.io/voyalis/voyago-base/auth-service
+    - image: auth-service
       context: src/authservice
       docker:
         dockerfile: Dockerfile

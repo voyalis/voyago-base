@@ -27,4 +27,3 @@ pkg/
 release/wi-kubernetes-manifests.yaml
 vendor/
 skaffold
-skaffold
