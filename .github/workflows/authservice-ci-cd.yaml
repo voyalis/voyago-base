@@ -7,12 +7,8 @@ on:
     paths:
       - 'src/authservice/**'
       - '.github/workflows/authservice-ci-cd.yaml'
-      - 'kubernetes-manifests/**' # Bu zaten kapsıyor olmalı
-      # - 'kubernetes-manifests/authservice.yaml' # Üstteki daha genel
-      # - 'kubernetes-manifests/postgres-auth/**' # Üstteki daha genel
-      # - 'kubernetes-manifests/auth-jwt-secret.yaml' # Üstteki daha genel
-      # - 'kubernetes-manifests/auth-migration-job.yaml' # YENİ EKLENDİ (veya üstteki paths ile kapsanıyor)
-      - 'skaffold.yaml'
+      - 'kubernetes-manifests/**' # Tüm K8s manifestlerini ve migration job'ını kapsar
+      - 'skaffold.yaml' # Lokal geliştirme için hala önemli olabilir
   pull_request:
     branches:
       - main
@@ -22,9 +18,9 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME_PREFIX: ${{ github.repository_owner }}/${{ github.event.repository.name }}
-  AUTH_SERVICE_IMAGE_NAME: auth-service
-  K8S_NAMESPACE: default
+  IMAGE_NAME_PREFIX: ${{ github.repository_owner }}/${{ github.event.repository.name }} # örn: voyalis/voyago-base
+  AUTH_SERVICE_IMAGE_NAME: auth-service # skaffold.yaml ve K8s manifestlerindeki kısa imaj adı
+  K8S_NAMESPACE: default # Minikube için kullanılacak namespace
 
 jobs:
   test-unit:
@@ -42,7 +38,7 @@ jobs:
         with:
           go-version: '1.23'
           cache: true
-          cache-dependency-path: ./src/authservice/go.sum # go.sum yolu belirtildi
+          cache-dependency-path: ./src/authservice/go.sum # go.sum dosyasının doğru yolu
 
       - name: Run Go Tidy
         run: go mod tidy
@@ -51,15 +47,23 @@ jobs:
         run: go vet ./...
 
       - name: Run Unit Tests (repository & service)
-        env: # Unit testler için (özellikle mocklanmayan kısımlar varsa)
-          JWT_SECRET_KEY: "ci_unit_test_jwt_secret_123"
+        env:
+          JWT_SECRET_KEY: "ci_unit_test_jwt_secret_1234567890_must_be_at_least_32_bytes" # 32 byte'tan uzun olmalı
         run: |
           echo "Running repository unit tests..."
           go test -v -race -coverprofile=repo_coverage.out -covermode=atomic ./repository/...
           echo "Running service unit tests..."
           go test -v -race -coverprofile=service_coverage.out -covermode=atomic ./service/...
-          # Birleştirilmiş coverage için (opsiyonel):
-          # echo "mode: atomic" > coverage.out && cat repo_coverage.out service_coverage.out | grep -v mode: | grep -v "^$" >> coverage.out
+          # İki coverage dosyasını birleştirmek için:
+          # echo "mode: atomic" > coverage.out
+          # cat repo_coverage.out service_coverage.out | grep -v mode: | grep -v "^$" >> coverage.out
+          # - name: Upload coverage to Codecov (Optional)
+          #   if: success() && github.repository == 'voyalis/voyago-base'
+          #   uses: codecov/codecov-action@v4
+          #   env:
+          #     CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          #   with:
+          #     files: ./coverage.out # working-directory ./src/authservice olduğu için ./coverage.out
 
   build-and-push:
     name: Build & Push AuthService Docker Image
@@ -67,9 +71,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      packages: write # GHCR'ye yazmak için
     outputs:
-      image_tag_sha_short: ${{ steps.meta.outputs.version }} # örn: sha-a1b2c3d
+      image_tag_sha_short: ${{ steps.meta.outputs.version }} # örn: sha-a1b2c3d (docker/metadata-action'dan)
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -92,7 +96,7 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./src/authservice
+          context: ./src/authservice # Dockerfile ve migrations klasörü burada olmalı
           file: ./src/authservice/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -112,19 +116,21 @@ jobs:
       - name: Setup Minikube
         uses: medyagh/setup-minikube@latest
         with:
-          cache: true
+          cache: true # Minikube ISO ve imajlarını cache'lemeye çalışır
+          # memory: '6144' # Minikube'e daha fazla bellek vermek için (opsiyonel, runner limitlerine bağlı)
+          # cpus: '2'     # Minikube'e daha fazla CPU vermek için (opsiyonel)
 
       - name: Ensure Kubeconfig is set for Minikube
         run: |
           minikube update-context
           kubectl config use-context minikube
           echo "Current Kube context set to Minikube for namespace: ${{ env.K8S_NAMESPACE }}"
+          # kubectl create namespace ${{ env.K8S_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f - || echo "Namespace '${{ env.K8S_NAMESPACE }}' already exists or no change."
 
-      # --- GÜNCELLENMİŞ SECRET VE MANIFEST UYGULAMA ADIMI ---
-      - name: Apply Base K8s Manifests & Create/Update Auth JWT Secret
+      - name: Apply Base Kubernetes Manifests & Create/Update Auth JWT Secret
         env:
-          # GitHub Secret'tan base64 encode edilmiş JWT secret'ını alıyoruz
-          AUTH_JWT_SECRET_B64_FROM_GITHUB: ${{ secrets.AUTH_JWT_SECRET_B64 }}
+          # GitHub Secret'tan HAM (base64 encode EDİLMEMİŞ) JWT secret'ını alıyoruz
+          AUTH_JWT_SECRET_RAW: ${{ secrets.AUTH_JWT_SECRET_B64 }} # Secret adını AUTH_JWT_SECRET_RAW olarak güncelleyin veya varolanı kullanın
         run: |
           echo "Applying PostgreSQL manifests to namespace: ${{ env.K8S_NAMESPACE }}"
           kubectl apply -f kubernetes-manifests/postgres-auth/configmap.yaml --namespace=${{ env.K8S_NAMESPACE }}
@@ -134,56 +140,126 @@ jobs:
           kubectl apply -f kubernetes-manifests/postgres-auth/service.yaml --namespace=${{ env.K8S_NAMESPACE }}
           
           echo "Waiting for PostgreSQL to be ready..."
-          kubectl rollout status deployment/postgres-auth-deployment --namespace=${{ env.K8S_NAMESPACE }} --timeout=240s
+          kubectl rollout status deployment/postgres-auth-deployment --namespace=${{ env.K8S_NAMESPACE }} --timeout=300s # Timeout artırıldı
 
           echo "Creating/Updating Kubernetes secret 'auth-jwt-secret' from GitHub Secret..."
-          if [ -z "$AUTH_JWT_SECRET_BASE64_FROM_GITHUB" ]; then
-            echo "ERROR: GitHub Secret AUTH_JWT_SECRET_B64 is not set!"
+          if [ -z "$AUTH_JWT_SECRET_RAW" ]; then
+            echo "ERROR: GitHub Secret AUTH_JWT_SECRET_B64 (veya kullandığınız ad) is not set!"
             exit 1
           fi
-          # Kubernetes Secret'ı oluştur veya güncelle
-          # --from-literal kullandığımızda değerin base64 encode edilmemiş olması beklenir, kubectl kendi encode eder.
-          # Ancak biz GitHub Secret'a base64 encode edilmiş halini koyduğumuz için,
-          # bunu önce decode edip sonra literal olarak verebiliriz ya da doğrudan data field'ını kullanarak manifest oluşturabiliriz.
-          # En temizi, kubectl'in decode etmesini sağlamak için GitHub Secret'a HAM string'i koymaktır.
-          # Eğer GitHub Secret'ta BASE64'LÜ DEĞER varsa, onu decode etmeliyiz:
-          # DECODED_JWT_SECRET=$(echo "$AUTH_JWT_SECRET_BASE64_FROM_GITHUB" | base64 --decode)
-          # kubectl create secret generic auth-jwt-secret \
-          #   --from-literal=jwtSecret="${DECODED_JWT_SECRET}" \
-          # ...
-          # DAHA BASİT YÖNTEM (GitHub Secret'a zaten base64'lü koyduysak):
-          # type: Opaque bir secret için data alanı base64 olmalı.
-          # `kubectl create secret generic` komutu `--from-literal` ile verdiğiniz değeri otomatik base64 encode eder.
-          # Eğer GitHub secret'ınız ZATEN base64 ise ve bunu `data` alanında kullanacaksanız,
-          # o zaman secret manifestini dinamik oluşturmak daha iyi.
-          # Ama `--from-literal` kullanıyorsak, GitHub secret'ına HAM değeri koyup, kubectl'in encode etmesini beklemek daha standart.
-
-          # --- ÖNERİLEN DÜZELTME: ---
-          # 1. GitHub Secret'ına (AUTH_JWT_SECRET_B64) JWT Key'inizin HAM (encode edilmemiş) halini koyun.
-          # 2. Aşağıdaki komutu kullanın, kubectl base64 encode işlemini yapacaktır.
+          # Önceki secret'ı sil (varsa) ve yeniden oluştur (idempotent)
+          kubectl delete secret auth-jwt-secret --namespace=${{ env.K8S_NAMESPACE }} --ignore-not-found=true
           kubectl create secret generic auth-jwt-secret \
-            --from-literal=jwtSecret="${{ secrets.AUTH_JWT_SECRET_B64 }}" \
-            --namespace=${{ env.K8S_NAMESPACE }} \
-            --dry-run=client -o yaml | kubectl apply -f -
-          # Bu, eğer secret zaten varsa hata verecektir. Güncellemek için:
-          # kubectl delete secret auth-jwt-secret --namespace=${{ env.K8S_NAMESPACE }} --ignore-not-found=true
-          # kubectl create secret generic auth-jwt-secret \
-          #   --from-literal=jwtSecret="${{ secrets.AUTH_JWT_SECRET_B64 }}" \
-          #   --namespace=${{ env.K8S_NAMESPACE }}
-          # VEYA daha iyisi, apply ile idempotent yapmak:
-          # (Aşağıdaki script, secret yoksa oluşturur, varsa günceller)
-          # cat <<EOF | kubectl apply -f -
-          # apiVersion: v1
-          # kind: Secret
-          # metadata:
-          #   name: auth-jwt-secret
-          #   namespace: ${{ env.K8S_NAMESPACE }}
-          # type: Opaque
-          # stringData: # stringData kullanırsak kubectl otomatik base64 encode eder
-          #   jwtSecret: ${{ secrets.AUTH_JWT_SECRET_B64 }} # BURAYA HAM SECRET GELMELİ
-          # EOF
+            --from-literal=jwtSecret="${AUTH_JWT_SECRET_RAW}" \
+            --namespace=${{ env.K8S_NAMESPACE }}
           echo "Kubernetes secret 'auth-jwt-secret' created/updated."
-      # ---------------------------------------------------------------------
 
-      # ... (Prepare and Run Database Migration Job adımı aynı kalır) ...
-      # ... (Deploy AuthService with Correct Image, E2E test adımları ve Verify Deployments aynı kalır) ...
+      - name: Prepare and Run Database Migration Job
+        env:
+          IMAGE_FOR_MIGRATION_JOB: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_PREFIX }}/${{ env.AUTH_SERVICE_IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag_sha_short }}
+        run: |
+          echo "Preparing Database Migration Job manifest using image: ${IMAGE_FOR_MIGRATION_JOB}"
+          
+          # kubernetes-manifests/auth-migration-job.yaml dosyasını kopyala
+          cp kubernetes-manifests/auth-migration-job.yaml auth-migration-job-ci.yaml
+          
+          # İmaj yer tutucusunu CI'da build edilen imajla değiştir
+          # placeholder-for-ci-image-replacement string'i auth-migration-job.yaml içinde tam olarak böyle olmalı!
+          sed -i "s|image: placeholder-for-ci-image-replacement|image: ${IMAGE_FOR_MIGRATION_JOB}|g" auth-migration-job-ci.yaml
+          
+          echo "--- CI Generated Migration Job Manifest (auth-migration-job-ci.yaml) ---"
+          cat auth-migration-job-ci.yaml
+          echo "---------------------------------------------------------------------"
+
+          echo "Applying and running Database Migration Job..."
+          kubectl delete job auth-db-migration-job --namespace=${{ env.K8S_NAMESPACE }} --ignore-not-found=true
+          sleep 5 # Kubernetes'in objeyi tamamen silmesi için kısa bir bekleme
+          
+          kubectl apply -f auth-migration-job-ci.yaml --namespace=${{ env.K8S_NAMESPACE }}
+          
+          echo "Waiting for Database Migration Job to complete..."
+          if ! kubectl wait --for=condition=complete job/auth-db-migration-job --namespace=${{ env.K8S_NAMESPACE }} --timeout=300s; then
+            echo "ERROR: Database migration job did not complete successfully!"
+            echo "--- Migration Job Pod Logs ---"
+            MIGRATION_POD_NAME=$(kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l job-name=auth-db-migration-job -o jsonpath='{.items[0].metadata.name}' --ignore-not-found=true || echo "")
+            if [ -n "$MIGRATION_POD_NAME" ]; then
+              kubectl logs $MIGRATION_POD_NAME -n ${{ env.K8S_NAMESPACE }} || echo "Could not get migration pod logs."
+            fi
+            exit 1
+          fi
+          
+          echo "Database Migration Job completed. Displaying logs (last 100 lines):"
+          kubectl logs job/auth-db-migration-job --namespace=${{ env.K8S_NAMESPACE }} --tail=100 || echo "Migration job logs not available (job might be already cleaned up)."
+          
+          MIGRATION_SUCCESS=$(kubectl get job auth-db-migration-job -n ${{ env.K8S_NAMESPACE }} -o jsonpath='{.status.succeeded}' --ignore-not-found=true)
+          if [ "$MIGRATION_SUCCESS" != "1" ]; then
+            echo "ERROR: Database migration job did not succeed (status.succeeded is not 1)!"
+            exit 1
+          fi
+          echo "Database migration job succeeded."
+          # Başarılı Job'ı CI'da hemen silebiliriz, ttlSecondsAfterFinished'i beklemeye gerek yok
+          kubectl delete job auth-db-migration-job --namespace=${{ env.K8S_NAMESPACE }} --ignore-not-found=true
+
+
+      - name: Deploy AuthService with Correct Image
+        env:
+          IMAGE_TO_DEPLOY_AUTHSERVICE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_PREFIX }}/${{ env.AUTH_SERVICE_IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag_sha_short }}
+        run: |
+          echo "Applying AuthService manifest..."
+          kubectl apply -f kubernetes-manifests/authservice.yaml --namespace=${{ env.K8S_NAMESPACE }}
+          
+          echo "Setting image for AuthService deployment to: ${IMAGE_TO_DEPLOY_AUTHSERVICE}"
+          kubectl set image deployment/authservice authservice=${IMAGE_TO_DEPLOY_AUTHSERVICE} --namespace=${{ env.K8S_NAMESPACE }}
+          
+          echo "Waiting for AuthService rollout..."
+          kubectl rollout status deployment/authservice --namespace=${{ env.K8S_NAMESPACE }} --timeout=240s
+
+      - name: Install tools for E2E tests (nc)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y netcat-openbsd # nc için
+
+      - name: Port-forward AuthService gRPC for E2E tests
+        run: |
+          echo "Starting AuthService port-forward (50051 -> 50051) for E2E tests..."
+          nohup kubectl port-forward svc/authservice 50051:50051 -n ${{ env.K8S_NAMESPACE }} > pf_auth_e2e.log 2>&1 &
+          sleep 15 # Port forward'ın başlaması ve servisin tam hazır olması için
+
+      - name: Wait for gRPC port (50051) to be ready on localhost (for E2E)
+        run: |
+          echo "Waiting for localhost:50051 (AuthService for E2E) to be ready..."
+          max_retries=20; count=0
+          until nc -z localhost 50051; do
+            if [ ${count} -ge ${max_retries} ]; then echo "Port 50051 (AuthService) did not become ready for E2E."; cat pf_auth_e2e.log; exit 1; fi
+            echo "Port 50051 (AuthService for E2E) unavailable - sleeping"; sleep 3; count=$((count+1))
+          done
+          echo "Port 50051 (AuthService for E2E) is up!"
+
+      - name: Set up Go for E2E Tests
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Run E2E Tests
+        working-directory: ./src/authservice # E2E testleri ./e2e/ altında
+        env:
+          AUTH_SERVICE_ADDR_E2E_TEST: "localhost:50051"
+          # CI_TEST_ENV: "true" # Bu, E2E testleri için değil, unit/integration testleri için db.go'da kullanılıyordu.
+        run: go test -v -race ./e2e/... -timeout 3m
+
+      - name: Tear down AuthService port-forward (Best effort)
+        if: always()
+        run: |
+          echo "Attempting to kill AuthService port-forward process..."
+          pkill -f "kubectl port-forward svc/authservice 50051:50051" || echo "AuthService Port-forward not found or already killed."
+
+      - name: Verify Deployments (Final Log Check)
+        if: always()
+        run: |
+          echo "Final check of deployments in namespace: ${{ env.K8S_NAMESPACE }}"
+          kubectl get all -n ${{ env.K8S_NAMESPACE }}
+          echo "--- AuthService Logs (Last 100 lines) ---"
+          kubectl logs deployment/authservice -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "AuthService logs could not be retrieved."
+          echo "--- PostgreSQL Logs (Last 100 lines) ---"
+          kubectl logs deployment/postgres-auth-deployment -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "PostgreSQL logs could not be retrieved."
