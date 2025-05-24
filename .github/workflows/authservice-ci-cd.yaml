@@ -211,3 +211,93 @@ jobs:
           kubectl logs deployment/authservice -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "AuthService logs not (yet) available."
           echo "--- PostgreSQL Logs (max 100 lines) ---"
           kubectl logs deployment/postgres-auth-deployment -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "PostgreSQL logs not (yet) available."
+
+        # ... (env bloğu ve jobs.test, jobs.build-and-push, jobs.deploy-to-minikube job'ları aynı kalır) ...
+
+  e2e-tests:
+    name: Run E2E Tests on Minikube
+    needs: deploy-to-minikube # deploy-to-minikube başarılı olursa çalışır
+    if: github.ref == 'refs/heads/main' # Sadece main branch'e push yapıldığında
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./src/authservice # E2E testleri de bu dizinden çalıştıracağız
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true # Test bağımlılıklarını da cache'leyebilir
+
+      - name: Install netcat (for port check)
+        run: sudo apt-get update && sudo apt-get install -y netcat-openbsd
+
+      - name: Setup Minikube Kubeconfig (uses context from previous job if available)
+        # Bu adım, Minikube'ün zaten deploy job'ında başlatıldığını varsayar.
+        # Eğer runner'lar farklıysa veya Minikube durumu korunmuyorsa,
+        # burada da bir Minikube setup gerekebilir. Şimdilik aynı runner'da devam ettiğini varsayalım.
+        # VEYA deploy-to-minikube job'ının kubeconfig'ini bir artifact olarak kaydedip burada indirebiliriz.
+        # En basiti, bu job'ın da kendi Minikube'ünü kurmasıdır.
+        # Ancak bu, süreyi uzatır. "needs" ile aynı runner'da çalışmasını umuyoruz.
+        # Daha garantili yol için:
+        uses: medyagh/setup-minikube@latest # Tekrar Minikube kuruyoruz, ama cache'ten faydalanabilir
+        with:
+          cache: true # Minikube imajlarını cache'lemeye çalışır
+
+      - name: Ensure Kubeconfig is set for Minikube
+        run: |
+          minikube update-context
+          kubectl config use-context minikube
+          echo "Current Kube context set to Minikube."
+
+      - name: Port-forward AuthService gRPC
+        run: |
+          echo "Attempting to port-forward svc/authservice from namespace ${{ env.K8S_NAMESPACE }}..."
+          # nohup ile arka plana atıp, bir sonraki adımda çalışmasını bekleyeceğiz
+          nohup kubectl port-forward svc/authservice 50051:50051 -n ${{ env.K8S_NAMESPACE }} > pf.log 2>&1 &
+          echo "Port-forward command issued."
+
+      - name: Wait for gRPC port (50051) to be ready on localhost
+        run: |
+          echo "Waiting for localhost:50051 to be ready..."
+          max_retries=30
+          count=0
+          until nc -z localhost 50051; do
+            if [ ${count} -ge ${max_retries} ]; then
+              echo "Port 50051 did not become ready in time."
+              echo "Dumping port-forward logs:"
+              cat pf.log || echo "pf.log not found."
+              echo "Dumping kubectl get svc authservice:"
+              kubectl get svc authservice -n ${{ env.K8S_NAMESPACE }} -o yaml || echo "Service not found."
+              echo "Dumping kubectl get pods for authservice:"
+              kubectl get pods -l app=authservice -n ${{ env.K8S_NAMESPACE }} -o yaml || echo "Pods not found."
+              echo "Dumping logs for authservice pods:"
+              POD_NAME=$(kubectl get pods -l app=authservice -n ${{ env.K8S_NAMESPACE }} -o jsonpath='{.items[0].metadata.name}' || echo "")
+              if [ -n "$POD_NAME" ]; then
+                kubectl logs $POD_NAME -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "Could not get logs."
+              fi
+              exit 1
+            fi
+            echo "Port 50051 is unavailable - sleeping for 2 seconds..."
+            sleep 2
+            count=$((count+1))
+          done
+          echo "Port 50051 is up and running on localhost!"
+
+      - name: Run E2E Tests
+        env:
+          # Test dosyamız bu ortam değişkenini okuyacak
+          AUTH_SERVICE_ADDR_E2E_TEST: "localhost:50051" 
+          # JWT_SECRET_KEY test içinde mock Repo ile kullanıldığı için burada kritik değil,
+          # ama gerçek bir client gibi davranıyorsak ve token'ı client'ta parse edeceksek lazım olabilir.
+          # Bizim E2E testimiz direkt gRPC client ile konuşuyor, token'ı servis üretiyor.
+        run: go test -v -race ./e2e/... -timeout 3m # E2E testleri e2e/ paketi altında çalıştır
+
+      - name: Tear down port-forward (Best effort)
+        if: always() # Her zaman çalışsın
+        run: |
+          echo "Attempting to kill port-forward process..."
+          pkill -f "kubectl port-forward svc/authservice 50051:50051" || echo "Port-forward process not found or already killed."
