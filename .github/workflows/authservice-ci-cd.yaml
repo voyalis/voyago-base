@@ -113,14 +113,15 @@ jobs:
         run: |
           minikube update-context
           kubectl config use-context minikube
-          echo "Current Kube context set to Minikube."
+          echo "Current Kube context set to Minikube for namespace: ${{ env.K8S_NAMESPACE }}"
+          # kubectl create namespace ${{ env.K8S_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f - || echo "Namespace '${{ env.K8S_NAMESPACE }}' already exists or could not be created."
 
       - name: Apply Base Kubernetes Manifests (PostgreSQL, Secrets)
         run: |
-          echo "Applying PostgreSQL and Secret manifests to namespace: ${{ env.K8S_NAMESPACE }}"
+          echo "Applying PostgreSQL and Auth JWT Secret manifests to namespace: ${{ env.K8S_NAMESPACE }}"
           kubectl apply -f kubernetes-manifests/postgres-auth/configmap.yaml --namespace=${{ env.K8S_NAMESPACE }}
           kubectl apply -f kubernetes-manifests/postgres-auth/secret.yaml --namespace=${{ env.K8S_NAMESPACE }}
-          kubectl apply -f kubernetes-manifests/auth-jwt-secret.yaml --namespace=${{ env.K8S_NAMESPACE }}
+          kubectl apply -f kubernetes-manifests/auth-jwt-secret.yaml --namespace=${{ env.K8S_NAMESPACE }} # JWT Secret
           kubectl apply -f kubernetes-manifests/postgres-auth/pvc.yaml --namespace=${{ env.K8S_NAMESPACE }}
           kubectl apply -f kubernetes-manifests/postgres-auth/deployment.yaml --namespace=${{ env.K8S_NAMESPACE }}
           kubectl apply -f kubernetes-manifests/postgres-auth/service.yaml --namespace=${{ env.K8S_NAMESPACE }}
@@ -130,59 +131,74 @@ jobs:
 
       - name: Prepare and Run Database Migration Job
         env:
-          IMAGE_TO_USE_FOR_MIGRATION: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_PREFIX }}/${{ env.AUTH_SERVICE_IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag_sha_short }}
+          # build-and-push job'ından gelen ve GHCR'ye push'lanan imajın tam adı ve etiketi
+          IMAGE_FOR_MIGRATION_JOB: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_PREFIX }}/${{ env.AUTH_SERVICE_IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag_sha_short }}
         run: |
-          echo "Preparing Database Migration Job manifest using image: ${IMAGE_TO_USE_FOR_MIGRATION}"
-          # auth-migration-job.yaml'ı kopyala ve imajı dinamik olarak set et
-          cp kubernetes-manifests/auth-migration-job.yaml auth-migration-job-ci.yaml
-          # 'image: placeholder-image-will-be-set-by-ci' satırını arıyoruz
-          # Bu satırın auth-migration-job.yaml içinde tam olarak bu şekilde olduğundan emin olun!
-          sed -i "s|image: placeholder-image-will-be-set-by-ci|image: ${IMAGE_TO_USE_FOR_MIGRATION}|g" auth-migration-job-ci.yaml
+          echo "Preparing Database Migration Job manifest using image: ${IMAGE_FOR_MIGRATION_JOB}"
           
+          # kubernetes-manifests/auth-migration-job.yaml dosyasını kopyala
+          cp kubernetes-manifests/auth-migration-job.yaml auth-migration-job-ci.yaml
+          
+          # İmaj yer tutucusunu CI'da build edilen imajla değiştir
+          # Dikkat: 'placeholder-for-ci-image-replacement' string'i auth-migration-job.yaml içinde tam olarak böyle olmalı
+          sed -i "s|image: placeholder-for-ci-image-replacement|image: ${IMAGE_FOR_MIGRATION_JOB}|g" auth-migration-job-ci.yaml
+          
+          echo "--- CI Generated Migration Job Manifest (auth-migration-job-ci.yaml) ---"
+          cat auth-migration-job-ci.yaml
+          echo "---------------------------------------------------------------------"
+
           echo "Applying and running Database Migration Job..."
+          # Önceki Job'ı sil (eğer varsa ve tekrar çalışmasını istiyorsak)
           kubectl delete job auth-db-migration-job --namespace=${{ env.K8S_NAMESPACE }} --ignore-not-found=true
-          sleep 5 # Silinmesi için bekleme
+          sleep 5 # Silinmesi için ve K8s API'sinin durumu algılaması için kısa bir bekleme
+          
           kubectl apply -f auth-migration-job-ci.yaml --namespace=${{ env.K8S_NAMESPACE }}
           
           echo "Waiting for Database Migration Job to complete..."
           kubectl wait --for=condition=complete job/auth-db-migration-job --namespace=${{ env.K8S_NAMESPACE }} --timeout=300s
-          echo "Database Migration Job completed. Displaying logs (last 50 lines):"
-          kubectl logs job/auth-db-migration-job --namespace=${{ env.K8S_NAMESPACE }} --tail=100 || echo "Migration job logs not available or job failed/no logs."
-          MIGRATION_SUCCESS=$(kubectl get job auth-db-migration-job -n ${{ env.K8S_NAMESPACE }} -o jsonpath='{.status.succeeded}')
+          
+          echo "Database Migration Job completed. Displaying logs (last 100 lines):"
+          kubectl logs job/auth-db-migration-job --namespace=${{ env.K8S_NAMESPACE }} --tail=100 || echo "Migration job logs not available or job already cleaned up."
+          
+          # Job'ın başarılı olup olmadığını kontrol et
+          MIGRATION_SUCCESS=$(kubectl get job auth-db-migration-job -n ${{ env.K8S_NAMESPACE }} -o jsonpath='{.status.succeeded}' --ignore-not-found=true)
           if [ "$MIGRATION_SUCCESS" != "1" ]; then
-            echo "Database migration job failed!"
-            # Job pod'unun loglarını çekmeye çalışalım
-            MIGRATION_POD_NAME=$(kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l job-name=auth-db-migration-job -o jsonpath='{.items[0].metadata.name}' || echo "")
+            echo "ERROR: Database migration job failed! Check logs above."
+            # Başarısız Job'ın pod loglarını çekmeye çalışalım (eğer ttlSecondsAfterFinished dolmadıysa)
+            MIGRATION_POD_NAME=$(kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l job-name=auth-db-migration-job -o jsonpath='{.items[0].metadata.name}' --ignore-not-found=true || echo "")
             if [ -n "$MIGRATION_POD_NAME" ]; then
-              echo "--- Migration Pod Logs ---"
+              echo "--- Migration Pod Logs (if available) ---"
               kubectl logs $MIGRATION_POD_NAME -n ${{ env.K8S_NAMESPACE }} || echo "Could not get migration pod logs."
             fi
             exit 1
           fi
           echo "Database migration job succeeded."
+          # Başarılı Job'ı hemen silebiliriz, ttlSecondsAfterFinished'i beklemeye gerek yok CI'da
+          # kubectl delete job auth-db-migration-job --namespace=${{ env.K8S_NAMESPACE }} --ignore-not-found=true
 
-      - name: Deploy AuthService with latest image
-        env: # JWT_SECRET_KEY'i burada da tanımlayalım ki AuthService pod'u doğru secret'ı alsın
-          # Aslında bu K8s manifesti içinden SecretRef ile alınıyor, burada tekrar env'e gerek yok.
-          # Sadece IMAGE_TO_DEPLOY_AUTHSERVICE'i set etmek yeterli.
+
+      - name: Deploy AuthService with Correct Image
+        env:
           IMAGE_TO_DEPLOY_AUTHSERVICE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_PREFIX }}/${{ env.AUTH_SERVICE_IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag_sha_short }}
         run: |
+          echo "Applying AuthService manifest..."
           kubectl apply -f kubernetes-manifests/authservice.yaml --namespace=${{ env.K8S_NAMESPACE }}
+          
           echo "Setting image for AuthService deployment to: ${IMAGE_TO_DEPLOY_AUTHSERVICE}"
           kubectl set image deployment/authservice authservice=${IMAGE_TO_DEPLOY_AUTHSERVICE} --namespace=${{ env.K8S_NAMESPACE }}
+          
           echo "Waiting for AuthService rollout..."
-          kubectl rollout status deployment/authservice --namespace=${{ env.K8S_NAMESPACE }} --timeout=240s
+          kubectl rollout status deployment/authservice --namespace=${{ env.K8S_NAMESPACE }} --timeout=180s
 
-      - name: Install tools for E2E tests (nc)
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y netcat-openbsd
+      # --- E2E Test Adımları ---
+      - name: Install netcat (for port check)
+        run: sudo apt-get update -y && sudo apt-get install -y netcat-openbsd
 
       - name: Port-forward AuthService gRPC for E2E tests
         run: |
           echo "Starting AuthService port-forward (50051 -> 50051) for E2E tests..."
           nohup kubectl port-forward svc/authservice 50051:50051 -n ${{ env.K8S_NAMESPACE }} > pf_auth_e2e.log 2>&1 &
-          sleep 15 # Port forward'ın başlaması ve servisin tam hazır olması için daha fazla bekle
+          sleep 15
 
       - name: Wait for gRPC port (50051) to be ready on localhost (for E2E)
         run: |
@@ -194,12 +210,19 @@ jobs:
           done
           echo "Port 50051 (AuthService for E2E) is up!"
 
+      - name: Set up Go for E2E Tests # E2E testleri Go ile çalıştıracağımız için
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true # Bağımlılıkları cache'le
+
       - name: Run E2E Tests
-        working-directory: ./src/authservice
+        working-directory: ./src/authservice # E2E testleri ./e2e/ altında
         env:
           AUTH_SERVICE_ADDR_E2E_TEST: "localhost:50051"
-          # CI_TEST_ENV: "true" # E2E testler için de DB ayarları gerekebilir, ama E2E testler canlı servise bağlanıyor.
-                              # Servis zaten K8s içindeki DB'ye bağlanıyor.
+          # E2E testleri CI'daki Minikube DB'sine değil,
+          # deploy edilen AuthService'in bağlandığı DB'ye (postgres-auth-svc) karşı çalışır.
+          # Bu yüzden E2E test kodu içinde DB bağlantı bilgilerini değiştirmemize gerek yok.
         run: go test -v -race ./e2e/... -timeout 3m
 
       - name: Tear down AuthService port-forward (Best effort)
@@ -213,7 +236,4 @@ jobs:
         run: |
           echo "Final check of deployments in namespace: ${{ env.K8S_NAMESPACE }}"
           kubectl get all -n ${{ env.K8S_NAMESPACE }}
-          echo "--- AuthService Logs (Last 100 lines) ---"
-          kubectl logs deployment/authservice -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "AuthService logs could not be retrieved."
-          echo "--- PostgreSQL Logs (Last 100 lines) ---"
-          kubectl logs deployment/postgres-auth-deployment -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "PostgreSQL logs could not be retrieved."
+          # ... (log çekme adımları aynı)

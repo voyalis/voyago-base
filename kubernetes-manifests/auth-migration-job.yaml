@@ -2,22 +2,23 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: auth-db-migration-job # Job'ın adı, CI'da bu isimle referans vereceğiz
-  namespace: default # Veya env.K8S_NAMESPACE (CI workflow'daki ile aynı olmalı)
+  name: auth-db-migration-job
+  namespace: default # Veya ${{ env.K8S_NAMESPACE }}
   labels:
     app: voyago-authservice
-    component: migration
+    component: migration-job
 spec:
-  ttlSecondsAfterFinished: 120 # Başarılı veya başarısız Job'ların ne kadar süreyle saklanacağı (opsiyonel)
+  ttlSecondsAfterFinished: 300 # Başarılı Job'ı 5 dakika sonra sil
+  backoffLimit: 2 # Başarısız olursa 2 kez daha dene (toplam 3 deneme)
   template:
     spec:
-      restartPolicy: Never # Job başarısız olursa yeniden başlatma (OnFailure da olabilir, ama genellikle migration'lar bir kez çalışır)
+      restartPolicy: OnFailure # Veya Never
+      # serviceAccountName: default # Veya özel bir SA
       containers:
       - name: migrate-auth-db-container
-        # CI'da build edilen ve GHCR'ye push'lanan imajı kullanacağız.
-        # Bu image alanı CI workflow'unda dinamik olarak set edilecek.
-        # Şimdilik bir yer tutucu bırakabiliriz veya CI'daki gibi bir format kullanabiliriz.
-        image: placeholder-image-will-be-set-by-ci # Örneğin: ghcr.io/voyalis/voyago-base/auth-service:sha-xxxxxxx
+        # CI'da build edilen ve GHCR'ye pushlanan AuthService imajını kullanacağız.
+        # Bu 'image:' alanı CI workflow'unda dinamik olarak set edilecek.
+        image: placeholder-for-ci-image-replacement # Bu satır CI'da sed ile değiştirilecek
         imagePullPolicy: IfNotPresent # Veya Always
         workingDir: /app # Dockerfile'daki WORKDIR ile aynı
         command: ["/app/migrate"] # İmaj içindeki migrate CLI'ının yolu
@@ -28,7 +29,6 @@ spec:
           - "up"
         envFrom: # Veritabanı credentials'larını ConfigMap ve Secret'tan al
           - configMapRef:
-              name: postgres-auth-config
+              name: postgres-auth-config # PostgreSQL ConfigMap'imizin adı
           - secretRef:
-              name: postgres-auth-secret
-  backoffLimit: 1 # Başarısız olursa kaç kez yeniden denesin (toplamda 2 deneme)
+              name: postgres-auth-secret  # PostgreSQL Secret'ımızın adı
