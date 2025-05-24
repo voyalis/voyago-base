@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"regexp" // SQLMock için regex eşleştirmesi
 	"testing"
 	"time"
@@ -83,6 +84,95 @@ func TestUserRepo_CreateUser_EmailExists(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestUserRepo_GetUserByEmail_NotFound(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t) // Bu helper fonksiyonumuz zaten var
+	defer db.Close()
+
+	email := "nonexistent@example.com"
+
+	userSelectQuery := regexp.QuoteMeta(
+		`SELECT id, password_hash, full_name, is_active, email_verified FROM auth.users WHERE email = $1`,
+	)
+	mock.ExpectQuery(userSelectQuery).
+		WithArgs(email).
+		WillReturnError(sql.ErrNoRows) // sql.ErrNoRows döndüğünü mock'luyoruz
+
+	userInfo, pwHash, isActive, err := repo.GetUserByEmail(context.Background(), email)
+
+	assert.Nil(t, userInfo, "userInfo nil olmalı çünkü kullanıcı bulunamadı")
+	assert.Empty(t, pwHash, "passwordHash boş olmalı çünkü kullanıcı bulunamadı")
+	assert.False(t, isActive, "isActive false olmalı çünkü kullanıcı bulunamadı")
+	require.Error(t, err, "Hata dönmeliydi")
+	assert.Contains(t, err.Error(), fmt.Sprintf("user with email '%s' not found", email), "Hata mesajı beklenen gibi olmalı")
+
+	assert.NoError(t, mock.ExpectationsWereMet(), "SQL mock beklentileri karşılanmadı")
+}
+
+func TestUserRepo_GetUserByID_Success(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	userID := uuid.New()
+	expectedEmail := "byid.repo@example.com"
+	expectedFullName := "By ID User Repo"
+	expectedIsActive := true
+	expectedEmailVerified := false // Test için farklı bir değer
+
+	// auth.users sorgusu için beklenti
+	idSelectQuery := regexp.QuoteMeta(
+		`SELECT email, full_name, is_active, email_verified FROM auth.users WHERE id = $1`,
+	)
+	mock.ExpectQuery(idSelectQuery).
+		WithArgs(userID).
+		WillReturnRows(sqlmock.NewRows(
+			[]string{"email", "full_name", "is_active", "email_verified"},
+		).AddRow(
+			expectedEmail, sql.NullString{String: expectedFullName, Valid: true}, expectedIsActive, expectedEmailVerified,
+		))
+
+	// auth.roles sorgusu için beklenti
+	rolesQuery := regexp.QuoteMeta(
+		`SELECT r.name FROM auth.roles r JOIN auth.user_roles ur ON r.id = ur.role_id WHERE ur.user_id = $1`,
+	)
+	mock.ExpectQuery(rolesQuery).
+		WithArgs(userID).
+		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("passenger"))
+
+	userInfo, err := repo.GetUserByID(context.Background(), userID)
+
+	require.NoError(t, err)
+	require.NotNil(t, userInfo)
+	assert.Equal(t, userID.String(), userInfo.UserId)
+	assert.Equal(t, expectedEmail, userInfo.Email)
+	assert.Equal(t, expectedFullName, userInfo.FullName)
+	assert.True(t, userInfo.IsActive) // Bu, mock'ladığımız değere göre olmalı
+	assert.False(t, userInfo.EmailVerified)
+	assert.Contains(t, userInfo.Roles, "passenger")
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUserRepo_GetUserByID_NotFound(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	userID := uuid.New()
+
+	idSelectQuery := regexp.QuoteMeta(
+		`SELECT email, full_name, is_active, email_verified FROM auth.users WHERE id = $1`,
+	)
+	mock.ExpectQuery(idSelectQuery).
+		WithArgs(userID).
+		WillReturnError(sql.ErrNoRows)
+
+	userInfo, err := repo.GetUserByID(context.Background(), userID)
+
+	assert.Nil(t, userInfo)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("user with ID '%s' not found", userID.String()))
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
 // TODO: GetUserByEmail, GetUserByID, StoreRefreshToken, GetRefreshTokenByHash,
 // RevokeRefreshTokenByHash, RevokeAllRefreshTokensForUser, UpdateUserLastSignInAt
 // için başarılı ve hata durumlarını içeren kapsamlı unit testler yazılacak.
