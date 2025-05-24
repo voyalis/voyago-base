@@ -3,25 +3,31 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: auth-db-migration-job
-  namespace: default # Veya ${{ env.K8S_NAMESPACE }}
+  # namespace: default # CI workflow'da env.K8S_NAMESPACE ile yönetilecek
   labels:
-    app: voyago-authservice
-    component: migration-job
+    app: voyago-authservice # Job'ın hangi uygulamayla ilgili olduğunu belirtir
+    component: db-migration
+  annotations:
+    # Bu Job'ın her CI çalıştığında (veya Helm ile upgrade/install olduğunda)
+    # tekrar çalışabilmesi için, eski Job'ın silinmesi gerekebilir.
+    # CI workflow'unda "kubectl delete job ... --ignore-not-found=true" ile bunu sağlıyoruz.
+    "helm.sh/hook": "pre-install,pre-upgrade" # Helm için örnek hook
+    "helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded" # Helm için
 spec:
-  ttlSecondsAfterFinished: 300 # Başarılı Job'ı 5 dakika sonra sil
+  ttlSecondsAfterFinished: 300 # Başarılı veya başarısız Job'ı 5 dakika sonra sil (K8s v1.21+)
   backoffLimit: 2 # Başarısız olursa 2 kez daha dene (toplam 3 deneme)
   template:
     spec:
-      restartPolicy: OnFailure # Veya Never
-      # serviceAccountName: default # Veya özel bir SA
+      restartPolicy: OnFailure # Başarısız olursa Pod'u yeniden başlat (Job için OnFailure veya Never)
+      # serviceAccountName: default # Veya özel bir ServiceAccount
       containers:
       - name: migrate-auth-db-container
-        # CI'da build edilen ve GHCR'ye pushlanan AuthService imajını kullanacağız.
-        # Bu 'image:' alanı CI workflow'unda dinamik olarak set edilecek.
-        image: placeholder-for-ci-image-replacement # Bu satır CI'da sed ile değiştirilecek
-        imagePullPolicy: IfNotPresent # Veya Always
-        workingDir: /app # Dockerfile'daki WORKDIR ile aynı
-        command: ["/app/migrate"] # İmaj içindeki migrate CLI'ının yolu
+        # Bu 'image:' alanı CI workflow'unda 'placeholder-for-ci-image-replacement'
+        # string'i ile değiştirilecek şekilde ayarlanmıştı. Bu placeholder'ı kullanalım.
+        image: placeholder-for-ci-image-replacement # CI'da build edilen AuthService imajı buraya gelecek
+        imagePullPolicy: IfNotPresent # Geliştirme için IfNotPresent, CI için Always olabilir
+        workingDir: /app # Dockerfile'daki WORKDIR ile aynı olmalı
+        command: ["/app/migrate"] # İmaj içindeki migrate CLI'ının tam yolu
         args:
           - "-path=/app/migrations" # İmaj içindeki migrations klasörünün yolu
           - "-database"

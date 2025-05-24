@@ -7,13 +7,18 @@ on:
     paths:
       - 'src/authservice/**'
       - '.github/workflows/authservice-ci-cd.yaml'
-      - 'kubernetes-manifests/**'
+      - 'kubernetes-manifests/**' # Bu zaten kapsıyor olmalı
+      # - 'kubernetes-manifests/authservice.yaml' # Üstteki daha genel
+      # - 'kubernetes-manifests/postgres-auth/**' # Üstteki daha genel
+      # - 'kubernetes-manifests/auth-jwt-secret.yaml' # Üstteki daha genel
+      # - 'kubernetes-manifests/auth-migration-job.yaml' # YENİ EKLENDİ (veya üstteki paths ile kapsanıyor)
       - 'skaffold.yaml'
   pull_request:
     branches:
       - main
     paths:
       - 'src/authservice/**'
+      - '.github/workflows/authservice-ci-cd.yaml'
 
 env:
   REGISTRY: ghcr.io
