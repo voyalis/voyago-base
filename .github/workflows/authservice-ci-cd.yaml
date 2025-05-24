@@ -3,14 +3,17 @@ name: AuthService CI/CD
 on:
   push:
     branches:
-      - main
-    paths:
+      - main # Ana geliştirme branch'iniz
+    paths: # Sadece bu dosyalarda değişiklik olduğunda çalışsın
       - 'src/authservice/**'
       - '.github/workflows/authservice-ci-cd.yaml'
-      - 'skaffold.yaml'
       - 'kubernetes-manifests/authservice.yaml'
       - 'kubernetes-manifests/postgres-auth/**'
       - 'kubernetes-manifests/auth-jwt-secret.yaml'
+      # skaffold.yaml'ı CI'da kullanmayacağımız için paths'ten çıkarabiliriz.
+      # Ancak lokal geliştirme için önemli olduğundan, değişikliklerini takip etmek isteyebilirsiniz.
+      # Şimdilik bırakalım, ileride CI'dan tamamen çıkarırsak kaldırırız.
+      - 'skaffold.yaml'
   pull_request:
     branches:
       - main
@@ -19,17 +22,17 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/auth-service # Format: owner/repo/image-name
-  # K8S_NAMESPACE: voyago-staging # Skaffold.yaml'da veya K8s manifestlerinde belirtilecekse burada gerek yok.
-                                 # Şimdilik Minikube'ün default namespace'ini kullanacağız.
+  # github.repository size "voyalis/voyago-base" gibi bir çıktı verir.
+  IMAGE_NAME: ${{ github.repository_owner }}/${{ github.event.repository.name }}/auth-service # Tam imaj yolu: ghcr.io/voyalis/voyago-base/auth-service
+  K8S_NAMESPACE: default # Minikube için varsayılan namespace
 
 jobs:
   test:
-    name: Run Go Tests
+    name: Run Go Tests for AuthService
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ./src/authservice
+        working-directory: ./src/authservice # Testleri authservice dizininde çalıştır
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -37,25 +40,34 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
-          cache: true
+          go-version: '1.23' # Projenizdeki go versiyonu
+          cache: true # Go modüllerini cache'ler
 
-      - name: Run Go Tidy
+      - name: Run Go Tidy (Check dependencies)
         run: go mod tidy
-        # Opsiyonel: Değişiklik varsa hata verdirilebilir.
+
+      - name: Run Go Vet (Static analysis)
+        run: go vet ./...
 
       - name: Run tests
-        run: go test -v -race ./...
+        run: go test -v -race -coverprofile=coverage.out ./...
+        # Test kapsamı raporu için:
+        # - name: Upload coverage reports to Codecov
+        #   uses: codecov/codecov-action@v4
+        #   with:
+        #     token: ${{ secrets.CODECOV_TOKEN }} # CODECOV_TOKEN secret'ı GitHub'da ayarlanmalı
+        #     files: ./coverage.out
 
   build-and-push:
-    name: Build & Push Docker Image
-    needs: test
+    name: Build & Push AuthService Docker Image
+    needs: test # test job'ı başarılı olursa başlar
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write # GHCR'ye yazmak için gerekli
-    outputs: # Bu job'dan çıkacak imaj etiketini diğer job'larda kullanmak için
-      image_tag_sha: ${{ steps.meta.outputs.version }} # Commit SHA'sını içeren etiket
+      packages: write # GHCR'ye yazmak için
+    outputs:
+      image_digest: ${{ steps.push.outputs.digest }} # Pushlanan imajın digest'i
+      image_tag_sha: ${{ steps.meta.outputs.version }} # sha-xxxxxxx gibi etiket
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -71,18 +83,19 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels) for Docker
-        id: meta # Bu adıma bir id veriyoruz ki çıktısını kullanabilelim
+        id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=sha,format=short,prefix= # Commit SHA'sının kısa hali (örn: sha-a1b2c3d)
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_default_branch}} # Sadece main branch ise latest etiketi
 
       - name: Build and push Docker image
+        id: push # Bu adıma bir ID veriyoruz ki çıktısını kullanabilelim
         uses: docker/build-push-action@v5
         with:
-          context: ./src/authservice
+          context: ./src/authservice # Dockerfile'ın bulunduğu dizin
           file: ./src/authservice/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -90,61 +103,59 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-    
-
   deploy-to-minikube:
-    name: Deploy to Staging (Minikube on Runner)
-    needs: build-and-push # build-and-push job'ından sonra çalışacak
-    if: github.ref == 'refs/heads/main' # Sadece main branch'e push yapıldığında
+    name: Deploy AuthService to Minikube
+    needs: build-and-push # build-and-push job'ından sonra başlar
+    if: github.ref == 'refs/heads/main' # Sadece main branch'e push yapıldığında deploy et
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Minikube
-        uses: medyagh/setup-minikube@latest # Veya tercih ettiğiniz action
+        uses: medyagh/setup-minikube@latest # Veya manusa/actions-setup-minikube@v2.9.0
 
-      # --- SKAFFOLD'U MANUEL KURMA ---
-      - name: Install Skaffold
-        run: |
-          curl -Lo skaffold https://storage.googleapis.com/skaffold/releases/latest/skaffold-linux-amd64
-          sudo install skaffold /usr/local/bin/
-          skaffold version # Kurulumu doğrulamak için versiyonu yazdır
-
-      - name: Get image name with SHA
-        id: image_tag
-        run: |
-          SHA_TAG="sha-$(echo ${GITHUB_SHA} | cut -c1-7)"
-          FULL_IMAGE_NAME_WITH_SHA="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SHA_TAG}"
-          echo "FULL_IMAGE_NAME_WITH_SHA=${FULL_IMAGE_NAME_WITH_SHA}" >> $GITHUB_OUTPUT
-          echo "Deploying image: ${FULL_IMAGE_NAME_WITH_SHA}"
-      
       - name: Ensure Kubeconfig is set for Minikube
         run: |
           minikube update-context
           kubectl config use-context minikube
-          kubectl create namespace ${{ env.K8S_NAMESPACE }} || echo "Namespace ${{ env.K8S_NAMESPACE }} already exists or could not be created, continuing..."
+          # kubectl create namespace ${{ env.K8S_NAMESPACE }} || echo "Namespace '${{ env.K8S_NAMESPACE }}' already exists." 
+          # default namespace için bu satır gereksizdir ve hata verebilir.
 
-      - name: Deploy to Minikube using Skaffold
+      - name: Deploy/Update Kubernetes Manifests
         run: |
-          echo "Deploying with Skaffold using image: ${{ steps.image_tag.outputs.FULL_IMAGE_NAME_WITH_SHA }}"
-          eval $(minikube -p minikube docker-env) # Minikube'ün Docker daemon'ını kullan
+          echo "Applying PostgreSQL and Secret manifests..."
+          kubectl apply -f kubernetes-manifests/postgres-auth/configmap.yaml --namespace=${{ env.K8S_NAMESPACE }}
+          kubectl apply -f kubernetes-manifests/postgres-auth/secret.yaml --namespace=${{ env.K8S_NAMESPACE }}
+          kubectl apply -f kubernetes-manifests/auth-jwt-secret.yaml --namespace=${{ env.K8S_NAMESPACE }} # JWT Secret
+          kubectl apply -f kubernetes-manifests/postgres-auth/pvc.yaml --namespace=${{ env.K8S_NAMESPACE }}
           
-          skaffold run \
-            --images auth-service=${{ steps.image_tag.outputs.FULL_IMAGE_NAME_WITH_SHA }} \
-            --kube-context minikube \
-            --namespace ${{ env.K8S_NAMESPACE }} \
-            --default-repo="" \
-            --skip-tests=true
-            # skaffold.yaml dosyasının yolu doğru olmalı (kök dizinde olduğunu varsayıyoruz)
+          # PostgreSQL Deployment ve Service'i uygula (veya güncelle)
+          # --force ile güncelleme sorunlarını çözebilir, ama dikkatli kullanılmalı
+          kubectl apply -f kubernetes-manifests/postgres-auth/deployment.yaml --namespace=${{ env.K8S_NAMESPACE }}
+          kubectl apply -f kubernetes-manifests/postgres-auth/service.yaml --namespace=${{ env.K8S_NAMESPACE }}
+          
+          echo "Waiting for PostgreSQL to be ready..."
+          kubectl rollout status deployment/postgres-auth-deployment --namespace=${{ env.K8S_NAMESPACE }} --timeout=180s
+
+          # AuthService manifestini uygula
+          kubectl apply -f kubernetes-manifests/authservice.yaml --namespace=${{ env.K8S_NAMESPACE }}
+          
+          # Deployment'ın imajını güncelle
+          IMAGE_TO_DEPLOY="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag_sha }}"
+          echo "Setting image for AuthService deployment to: ${IMAGE_TO_DEPLOY}"
+          kubectl set image deployment/authservice authservice=${IMAGE_TO_DEPLOY} --namespace=${{ env.K8S_NAMESPACE }}
+          
+          echo "Waiting for AuthService rollout..."
+          kubectl rollout status deployment/authservice --namespace=${{ env.K8S_NAMESPACE }} --timeout=120s
 
       - name: Verify Deployments
         if: success()
         run: |
-          echo "Waiting for pods in namespace ${{ env.K8S_NAMESPACE }} to be ready..."
-          sleep 60 
+          echo "Verifying deployments in namespace: ${{ env.K8S_NAMESPACE }}"
+          sleep 30 # Podların tam olarak log üretmeye başlaması için biraz bekleme
           kubectl get all -n ${{ env.K8S_NAMESPACE }}
-          echo "--- AuthService Logs ---"
-          kubectl logs deployment/authservice -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "AuthService logs not available yet"
-          echo "--- PostgreSQL Logs ---"
-          kubectl logs deployment/postgres-auth-deployment -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "PostgreSQL logs not available yet"
+          echo "--- AuthService Logs (max 100 lines) ---"
+          kubectl logs deployment/authservice -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "AuthService logs not (yet) available."
+          echo "--- PostgreSQL Logs (max 100 lines) ---"
+          kubectl logs deployment/postgres-auth-deployment -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "PostgreSQL logs not (yet) available."
