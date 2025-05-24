@@ -61,15 +61,16 @@ message RequestPasswordResetRequest {
   string email = 1;
 }
 message RequestPasswordResetResponse {
-  string message = 1; // "Eğer e-posta kayıtlıysa link gönderildi"
+  string message = 1;   // Örneğin: "Eğer e-posta kayıtlıysa, sıfırlama linki gönderilecektir."
+  int32 expires_in_seconds = 2; // Token'ın geçerlilik süresi (opsiyonel)
 }
 
 message ConfirmPasswordResetRequest {
-  string reset_token = 1;
+  string reset_token = 1; // Kullanıcının e-postasından aldığı token
   string new_password = 2;
 }
 message ConfirmPasswordResetResponse {
-  string message = 1;
+  string message = 1;   // Örneğin: "Şifreniz başarıyla güncellendi."
 }
 
 // E-posta Doğrulama

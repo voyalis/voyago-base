@@ -38,6 +38,16 @@ type RefreshToken struct {
 	CreatedAt     time.Time
 }
 
+type PasswordResetToken struct {
+	TokenHash string    // PK
+	UserID    uuid.UUID
+	ExpiresAt time.Time
+	CreatedAt time.Time
+	Consumed  bool
+}
+
+
+
 // UserRepoInterface, UserRepo'nun implemente edeceği metotları tanımlar.
 // Bu interface, service katmanının repository'ye olan bağımlılığını soyutlar.
 type UserRepoInterface interface {
@@ -49,6 +59,11 @@ type UserRepoInterface interface {
 	RevokeRefreshTokenByHash(ctx context.Context, tokenHash string) error
 	RevokeAllRefreshTokensForUser(ctx context.Context, userID uuid.UUID) error
 	UpdateUserLastSignInAt(ctx context.Context, userID uuid.UUID) error
+	StorePasswordResetToken(ctx context.Context, userID uuid.UUID, tokenHash string, expiresAt time.Time) error
+	GetValidPasswordResetTokenByHash(ctx context.Context, tokenHash string) (*PasswordResetToken, error)
+	MarkPasswordResetTokenAsUsed(ctx context.Context, tokenHash string) error
+	UpdateUserPassword(ctx context.Context, userID uuid.UUID, newPasswordHash string) error
+	
 }
 
 type UserRepo struct {
@@ -185,6 +200,83 @@ func (r *UserRepo) UpdateUserLastSignInAt(ctx context.Context, userID uuid.UUID)
 	_, err := r.db.ExecContext(ctx, query, userID)
 	if err != nil { slog.ErrorContext(ctx, "Repository: Error updating last_sign_in_at", "userID", userID.String(), "error", err); return fmt.Errorf("could not update last_sign_in_at: %w", err) }
 	slog.InfoContext(ctx, "Repository: last_sign_in_at updated", "userID", userID.String())
+	return nil
+}
+
+func (r *UserRepo) StorePasswordResetToken(ctx context.Context, userID uuid.UUID, tokenHash string, expiresAt time.Time) error {
+	query := `
+		INSERT INTO auth.password_reset_tokens (user_id, token_hash, expires_at, consumed)
+		VALUES ($1, $2, $3, FALSE)
+		ON CONFLICT (token_hash) DO UPDATE SET 
+			user_id = EXCLUDED.user_id,
+			expires_at = EXCLUDED.expires_at,
+			consumed = FALSE,
+			created_at = NOW()` // Veya ON CONFLICT DO NOTHING de olabilir, uygulamanın mantığına göre
+	_, err := r.db.ExecContext(ctx, query, userID, tokenHash, expiresAt)
+	if err != nil {
+		slog.ErrorContext(ctx, "Repository: Error storing password reset token", "userID", userID.String(), "error", err)
+		return fmt.Errorf("could not store password reset token: %w", err)
+	}
+	slog.InfoContext(ctx, "Repository: Password reset token stored", "userID", userID.String(), "tokenHash_prefix", tokenHash[:min(8, len(tokenHash))])
+	return nil
+}
+
+func (r *UserRepo) GetValidPasswordResetTokenByHash(ctx context.Context, tokenHash string) (*PasswordResetToken, error) {
+	var prt PasswordResetToken
+	query := `
+		SELECT token_hash, user_id, expires_at, created_at, consumed
+		FROM auth.password_reset_tokens
+		WHERE token_hash = $1 AND consumed = FALSE AND expires_at > NOW()`
+	err := r.db.QueryRowContext(ctx, query, tokenHash).Scan(
+		&prt.TokenHash,
+		&prt.UserID,
+		&prt.ExpiresAt,
+		&prt.CreatedAt,
+		&prt.Consumed,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			slog.DebugContext(ctx, "Repository: Password reset token not found, expired, or already consumed", "tokenHash_prefix", tokenHash[:min(8, len(tokenHash))])
+			return nil, fmt.Errorf("password reset token not found, expired, or consumed")
+		}
+		slog.ErrorContext(ctx, "Repository: Error getting password reset token by hash", "tokenHash_prefix", tokenHash[:min(8, len(tokenHash))], "error", err)
+		return nil, fmt.Errorf("could not get password reset token: %w", err)
+	}
+	slog.DebugContext(ctx, "Repository: Valid password reset token fetched by hash", "userID", prt.UserID.String())
+	return &prt, nil
+}
+
+func (r *UserRepo) MarkPasswordResetTokenAsUsed(ctx context.Context, tokenHash string) error {
+	query := `UPDATE auth.password_reset_tokens SET consumed = TRUE WHERE token_hash = $1 AND consumed = FALSE`
+	result, err := r.db.ExecContext(ctx, query, tokenHash)
+	if err != nil {
+		slog.ErrorContext(ctx, "Repository: Error marking password reset token as used", "tokenHash_prefix", tokenHash[:min(8, len(tokenHash))], "error", err)
+		return fmt.Errorf("could not mark password reset token as used: %w", err)
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		slog.WarnContext(ctx, "Repository: No active password reset token found to mark as used", "tokenHash_prefix", tokenHash[:min(8, len(tokenHash))])
+		// Bu bir hata olabilir (beklenmedik durum) veya token zaten kullanılmış/süresi dolmuş olabilir.
+		// return fmt.Errorf("no active password reset token found to mark as used") // İsteğe bağlı
+	} else {
+		slog.InfoContext(ctx, "Repository: Password reset token marked as used", "tokenHash_prefix", tokenHash[:min(8, len(tokenHash))])
+	}
+	return nil
+}
+
+func (r *UserRepo) UpdateUserPassword(ctx context.Context, userID uuid.UUID, newPasswordHash string) error {
+	query := `UPDATE auth.users SET password_hash = $1, updated_at = NOW() WHERE id = $2`
+	result, err := r.db.ExecContext(ctx, query, newPasswordHash, userID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Repository: Error updating user password", "userID", userID.String(), "error", err)
+		return fmt.Errorf("could not update user password: %w", err)
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		slog.WarnContext(ctx, "Repository: User not found to update password (or password already same - unlikely with hash)", "userID", userID.String())
+		return fmt.Errorf("user not found to update password, or no change needed")
+	}
+	slog.InfoContext(ctx, "Repository: User password updated successfully", "userID", userID.String())
 	return nil
 }
 
