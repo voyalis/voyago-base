@@ -42,11 +42,11 @@ type AuthServiceClient interface {
 	ValidateToken(ctx context.Context, in *ValidateTokenRequest, opts ...grpc.CallOption) (*ValidateTokenResponse, error)
 	RefreshAccessToken(ctx context.Context, in *RefreshAccessTokenRequest, opts ...grpc.CallOption) (*LoginResponse, error)
 	Logout(ctx context.Context, in *LogoutRequest, opts ...grpc.CallOption) (*LogoutResponse, error)
-	// Şifre ve Hesap Yönetimi RPC'leri (MVP'de bazıları mock/basit implementasyon olabilir)
+	// Şifre ve Hesap Yönetimi RPC'leri
 	ChangePassword(ctx context.Context, in *ChangePasswordRequest, opts ...grpc.CallOption) (*ChangePasswordResponse, error)
 	RequestPasswordReset(ctx context.Context, in *RequestPasswordResetRequest, opts ...grpc.CallOption) (*RequestPasswordResetResponse, error)
 	ConfirmPasswordReset(ctx context.Context, in *ConfirmPasswordResetRequest, opts ...grpc.CallOption) (*ConfirmPasswordResetResponse, error)
-	// E-posta Doğrulama RPC'leri (MVP'de bazıları mock/basit implementasyon olabilir)
+	// E-posta Doğrulama RPC'leri
 	RequestEmailVerification(ctx context.Context, in *RequestEmailVerificationRequest, opts ...grpc.CallOption) (*RequestEmailVerificationResponse, error)
 	ConfirmEmailVerification(ctx context.Context, in *ConfirmEmailVerificationRequest, opts ...grpc.CallOption) (*ConfirmEmailVerificationResponse, error)
 	// Kullanıcı Bilgileri Güncelleme
@@ -181,11 +181,11 @@ type AuthServiceServer interface {
 	ValidateToken(context.Context, *ValidateTokenRequest) (*ValidateTokenResponse, error)
 	RefreshAccessToken(context.Context, *RefreshAccessTokenRequest) (*LoginResponse, error)
 	Logout(context.Context, *LogoutRequest) (*LogoutResponse, error)
-	// Şifre ve Hesap Yönetimi RPC'leri (MVP'de bazıları mock/basit implementasyon olabilir)
+	// Şifre ve Hesap Yönetimi RPC'leri
 	ChangePassword(context.Context, *ChangePasswordRequest) (*ChangePasswordResponse, error)
 	RequestPasswordReset(context.Context, *RequestPasswordResetRequest) (*RequestPasswordResetResponse, error)
 	ConfirmPasswordReset(context.Context, *ConfirmPasswordResetRequest) (*ConfirmPasswordResetResponse, error)
-	// E-posta Doğrulama RPC'leri (MVP'de bazıları mock/basit implementasyon olabilir)
+	// E-posta Doğrulama RPC'leri
 	RequestEmailVerification(context.Context, *RequestEmailVerificationRequest) (*RequestEmailVerificationResponse, error)
 	ConfirmEmailVerification(context.Context, *ConfirmEmailVerificationRequest) (*ConfirmEmailVerificationResponse, error)
 	// Kullanıcı Bilgileri Güncelleme

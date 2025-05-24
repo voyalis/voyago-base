@@ -46,6 +46,14 @@ type PasswordResetToken struct {
 	Consumed  bool
 }
 
+type EmailVerificationToken struct {
+	TokenHash     string    // PK
+	UserID        uuid.UUID
+	Email         string    // Hangi e-postanın doğrulandığı
+	ExpiresAt     time.Time
+	CreatedAt     time.Time
+	Consumed      bool
+}
 
 
 // UserRepoInterface, UserRepo'nun implemente edeceği metotları tanımlar.
@@ -63,6 +71,10 @@ type UserRepoInterface interface {
 	GetValidPasswordResetTokenByHash(ctx context.Context, tokenHash string) (*PasswordResetToken, error)
 	MarkPasswordResetTokenAsUsed(ctx context.Context, tokenHash string) error
 	UpdateUserPassword(ctx context.Context, userID uuid.UUID, newPasswordHash string) error
+	StoreEmailVerificationToken(ctx context.Context, userID uuid.UUID, email string, tokenHash string, expiresAt time.Time) error
+	GetValidEmailVerificationTokenByHash(ctx context.Context, tokenHash string) (*EmailVerificationToken, error)
+	MarkEmailVerificationTokenAsUsed(ctx context.Context, tokenHash string) error
+	MarkUserEmailAsVerified(ctx context.Context, userID uuid.UUID) error
 	
 }
 
@@ -211,7 +223,7 @@ func (r *UserRepo) StorePasswordResetToken(ctx context.Context, userID uuid.UUID
 			user_id = EXCLUDED.user_id,
 			expires_at = EXCLUDED.expires_at,
 			consumed = FALSE,
-			created_at = NOW()` // Veya ON CONFLICT DO NOTHING de olabilir, uygulamanın mantığına göre
+			created_at = NOW()` // SQL İÇİ YORUM KALDIRILDI
 	_, err := r.db.ExecContext(ctx, query, userID, tokenHash, expiresAt)
 	if err != nil {
 		slog.ErrorContext(ctx, "Repository: Error storing password reset token", "userID", userID.String(), "error", err)
@@ -220,6 +232,7 @@ func (r *UserRepo) StorePasswordResetToken(ctx context.Context, userID uuid.UUID
 	slog.InfoContext(ctx, "Repository: Password reset token stored", "userID", userID.String(), "tokenHash_prefix", tokenHash[:min(8, len(tokenHash))])
 	return nil
 }
+
 
 func (r *UserRepo) GetValidPasswordResetTokenByHash(ctx context.Context, tokenHash string) (*PasswordResetToken, error) {
 	var prt PasswordResetToken
@@ -277,6 +290,86 @@ func (r *UserRepo) UpdateUserPassword(ctx context.Context, userID uuid.UUID, new
 		return fmt.Errorf("user not found to update password, or no change needed")
 	}
 	slog.InfoContext(ctx, "Repository: User password updated successfully", "userID", userID.String())
+	return nil
+}
+
+// --- Email Verification Token Fonksiyonları (UserRepo metotları olarak) ---
+
+func (r *UserRepo) StoreEmailVerificationToken(ctx context.Context, userID uuid.UUID, email string, tokenHash string, expiresAt time.Time) error {
+	query := `
+		INSERT INTO auth.email_verification_tokens (user_id, email, token_hash, expires_at, consumed)
+		VALUES ($1, $2, $3, $4, FALSE)
+		ON CONFLICT (token_hash) DO UPDATE SET 
+			user_id = EXCLUDED.user_id,
+			email = EXCLUDED.email,
+			expires_at = EXCLUDED.expires_at,
+			consumed = FALSE,
+			created_at = NOW()`
+	_, err := r.db.ExecContext(ctx, query, userID, email, tokenHash, expiresAt)
+	if err != nil {
+		slog.ErrorContext(ctx, "Repository: Error storing email verification token", "userID", userID.String(), "email", email, "error", err)
+		return fmt.Errorf("could not store email verification token: %w", err)
+	}
+	slog.InfoContext(ctx, "Repository: Email verification token stored", "userID", userID.String(), "email", email, "tokenHash_prefix", tokenHash[:min(8, len(tokenHash))])
+	return nil
+}
+
+func (r *UserRepo) GetValidEmailVerificationTokenByHash(ctx context.Context, tokenHash string) (*EmailVerificationToken, error) {
+	var evt EmailVerificationToken
+	query := `
+		SELECT token_hash, user_id, email, expires_at, created_at, consumed
+		FROM auth.email_verification_tokens
+		WHERE token_hash = $1 AND consumed = FALSE AND expires_at > NOW()`
+	err := r.db.QueryRowContext(ctx, query, tokenHash).Scan(
+		&evt.TokenHash,
+		&evt.UserID,
+		&evt.Email,
+		&evt.ExpiresAt,
+		&evt.CreatedAt,
+		&evt.Consumed,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			slog.DebugContext(ctx, "Repository: Email verification token not found, expired, or consumed", "tokenHash_prefix", tokenHash[:min(8, len(tokenHash))])
+			return nil, fmt.Errorf("email verification token not found, expired, or consumed")
+		}
+		slog.ErrorContext(ctx, "Repository: Error getting email verification token by hash", "tokenHash_prefix", tokenHash[:min(8, len(tokenHash))], "error", err)
+		return nil, fmt.Errorf("could not get email verification token: %w", err)
+	}
+	slog.DebugContext(ctx, "Repository: Valid email verification token fetched", "userID", evt.UserID.String(), "email", evt.Email)
+	return &evt, nil
+}
+
+func (r *UserRepo) MarkEmailVerificationTokenAsUsed(ctx context.Context, tokenHash string) error {
+	query := `UPDATE auth.email_verification_tokens SET consumed = TRUE WHERE token_hash = $1 AND consumed = FALSE`
+	result, err := r.db.ExecContext(ctx, query, tokenHash)
+	if err != nil {
+		slog.ErrorContext(ctx, "Repository: Error marking email verification token as used", "tokenHash_prefix", tokenHash[:min(8, len(tokenHash))], "error", err)
+		return fmt.Errorf("could not mark email verification token as used: %w", err)
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		slog.WarnContext(ctx, "Repository: No active email verification token found to mark as used", "tokenHash_prefix", tokenHash[:min(8, len(tokenHash))])
+	} else {
+		slog.InfoContext(ctx, "Repository: Email verification token marked as used", "tokenHash_prefix", tokenHash[:min(8, len(tokenHash))])
+	}
+	return nil
+}
+
+func (r *UserRepo) MarkUserEmailAsVerified(ctx context.Context, userID uuid.UUID) error {
+	query := `UPDATE auth.users SET email_verified = TRUE, updated_at = NOW() WHERE id = $1 AND email_verified = FALSE`
+	result, err := r.db.ExecContext(ctx, query, userID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Repository: Error marking user email as verified", "userID", userID.String(), "error", err)
+		return fmt.Errorf("could not mark user email as verified: %w", err)
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		slog.InfoContext(ctx, "Repository: User email already verified or user not found", "userID", userID.String())
+		// Bu bir hata olmayabilir, idempotentlik için.
+	} else {
+		slog.InfoContext(ctx, "Repository: User email marked as verified", "userID", userID.String())
+	}
 	return nil
 }
 

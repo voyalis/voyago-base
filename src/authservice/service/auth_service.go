@@ -26,6 +26,8 @@ const (
 	passwordResetTokenBytesLength = 32             // Token için byte uzunluğu (256-bit)
 	passwordResetTokenExpiry      = 15 * time.Minute // Token geçerlilik süresi
 	// maxActivePasswordResetTokens = 3 // Kullanıcı başına aktif sıfırlama token sayısı limiti (opsiyonel)
+	emailVerificationTokenBytesLength = 32             // YENİ
+	emailVerificationTokenExpiry      = 24 * time.Hour // YENİ (örn: 24 saat)
 )
 
 // UserRepository interface'i, AuthService'in repository'ye olan bağımlılığını tanımlar.
@@ -42,6 +44,10 @@ type UserRepository interface {
 	GetValidPasswordResetTokenByHash(ctx context.Context, tokenHash string) (*repository.PasswordResetToken, error)
 	MarkPasswordResetTokenAsUsed(ctx context.Context, tokenHash string) error
 	UpdateUserPassword(ctx context.Context, userID uuid.UUID, newPasswordHash string) error
+	StoreEmailVerificationToken(ctx context.Context, userID uuid.UUID, email string, tokenHash string, expiresAt time.Time) error
+	GetValidEmailVerificationTokenByHash(ctx context.Context, tokenHash string) (*repository.EmailVerificationToken, error) // repository.EmailVerificationToken DÖNÜYOR
+	MarkEmailVerificationTokenAsUsed(ctx context.Context, tokenHash string) error
+	MarkUserEmailAsVerified(ctx context.Context, userID uuid.UUID) error
 }
 
 type AuthServiceServer struct {
@@ -473,15 +479,116 @@ func (s *AuthServiceServer) ChangePassword(ctx context.Context, req *pb.ChangePa
 	return &pb.ChangePasswordResponse{Message: "Password changed successfully."}, nil
 }
 
+// src/authservice/service/auth_service.go
+
 func (s *AuthServiceServer) RequestEmailVerification(ctx context.Context, req *pb.RequestEmailVerificationRequest) (*pb.RequestEmailVerificationResponse, error) {
-	slog.WarnContext(ctx, "RPC method not implemented", "method", "RequestEmailVerification")
-	// TODO: Implement e-posta doğrulama token'ı üretme, saklama ve e-posta gönderme (mock)
-	return nil, status.Errorf(codes.Unimplemented, "method RequestEmailVerification not implemented")
+	slog.InfoContext(ctx, "Service: RequestEmailVerification request received")
+
+	if req.AccessToken == "" {
+		slog.WarnContext(ctx, "Service: RequestEmailVerification failed - access token is required")
+		return nil, status.Errorf(codes.InvalidArgument, "Access token is required")
+	}
+
+	// 1. Access Token'ı doğrula ve kullanıcı bilgilerini al
+	validateRes, err := s.ValidateToken(ctx, &pb.ValidateTokenRequest{Token: req.AccessToken})
+	if err != nil {
+		slog.WarnContext(ctx, "Service: RequestEmailVerification failed - invalid access token", "error", err)
+		return nil, err // ValidateToken zaten uygun gRPC hatasını döner (örn: Unauthenticated)
+	}
+	userInfo := validateRes.User // Bu UserInfo *pb.UserInfo tipinde olmalı
+	if userInfo.EmailVerified {
+		slog.InfoContext(ctx, "Service: Email already verified for user", "userID", userInfo.UserId, "email", userInfo.Email)
+		return &pb.RequestEmailVerificationResponse{
+			Message: "Your email address is already verified.",
+		}, nil
+	}
+
+	parsedUserID, errParse := uuid.Parse(userInfo.UserId)
+	if errParse != nil {
+		slog.ErrorContext(ctx, "Service: Failed to parse UserID from validated token", "userID_str", userInfo.UserId, "error", errParse.Error())
+		return nil, status.Errorf(codes.Internal, "Internal server error processing user ID")
+	}
+
+	// 2. Güvenli bir doğrulama token'ı üret
+	rawVerificationToken, err := generateSecureRandomToken(emailVerificationTokenBytesLength)
+	if err != nil {
+		slog.ErrorContext(ctx, "Service: Failed to generate email verification token", "userID", parsedUserID.String(), "error", err.Error())
+		return nil, status.Errorf(codes.Internal, "Failed to initiate email verification")
+	}
+	hashedVerificationToken := hashToken(rawVerificationToken) // Ham token'ı hash'le
+	expiresAt := time.Now().Add(emailVerificationTokenExpiry)
+
+	// 3. Token'ı veritabanında sakla
+	// StoreEmailVerificationToken, userID, email, tokenHash, expiresAt alır.
+	// userInfo.Email'i kullanıyoruz.
+	if err := s.userRepo.StoreEmailVerificationToken(ctx, parsedUserID, userInfo.Email, hashedVerificationToken, expiresAt); err != nil {
+		slog.ErrorContext(ctx, "Service: Failed to store email verification token in repository", "userID", parsedUserID.String(), "email", userInfo.Email, "error", err.Error())
+		return nil, status.Errorf(codes.Internal, "Failed to initiate email verification process")
+	}
+
+	// 4. Kullanıcıya doğrulama linkini içeren bir e-posta gönder (ŞİMDİLİK MOCK/LOG)
+	// TODO: Gerçek bir e-posta gönderme servisi entegre et.
+	verificationLink := fmt.Sprintf("https://voya.go/verify-email?token=%s", rawVerificationToken) // raw token'ı linke ekle
+	slog.InfoContext(ctx, "MOCK_EMAIL_SERVICE: Sending email verification email",
+		"to", userInfo.Email,
+		"subject", "VoyaGo Email Verification",
+		"verification_link_for_debug", verificationLink,     // DEBUG İÇİN LOGLA, ÜRETİMDE KALDIR
+		"raw_token_for_debug", rawVerificationToken,         // DEBUG İÇİN LOGLA, ÜRETİMDE KALDIR
+	)
+
+	slog.InfoContext(ctx, "Service: Email verification token generated and (mock) email sent", "userID", userInfo.UserId, "email", userInfo.Email)
+	return &pb.RequestEmailVerificationResponse{
+		Message:         "A verification link has been sent to your email address.",
+		ExpiresInSeconds: int32(emailVerificationTokenExpiry.Seconds()),
+	}, nil
 }
+// src/authservice/service/auth_service.go
+
 func (s *AuthServiceServer) ConfirmEmailVerification(ctx context.Context, req *pb.ConfirmEmailVerificationRequest) (*pb.ConfirmEmailVerificationResponse, error) {
-	slog.WarnContext(ctx, "RPC method not implemented", "method", "ConfirmEmailVerification")
-	// TODO: Gelen token'ı doğrulama, users tablosunda email_verified flag'ini güncelleme
-	return nil, status.Errorf(codes.Unimplemented, "method ConfirmEmailVerification not implemented")
+	slog.InfoContext(ctx, "Service: ConfirmEmailVerification request received")
+
+	if req.VerificationToken == "" {
+		slog.WarnContext(ctx, "Service: ConfirmEmailVerification failed - verification token is required")
+		return nil, status.Errorf(codes.InvalidArgument, "Verification token is required")
+	}
+
+	hashedVerificationToken := hashToken(req.VerificationToken) // Gelen ham token'ı hash'le
+
+	// 1. Veritabanından geçerli (süresi dolmamış, kullanılmamış) token'ı al
+	// GetValidEmailVerificationTokenByHash *repository.EmailVerificationToken döner
+	dbVerificationToken, err := s.userRepo.GetValidEmailVerificationTokenByHash(ctx, hashedVerificationToken)
+	if err != nil {
+		slog.WarnContext(ctx, "Service: ConfirmEmailVerification - GetValidEmailVerificationTokenByHash failed", "error", err.Error(), "provided_token_hash_prefix", hashedVerificationToken[:min(8, len(hashedVerificationToken))])
+		return nil, status.Errorf(codes.InvalidArgument, "Invalid, expired, or already used verification token")
+	}
+
+	// 2. Kullanıcının e-postasını doğrulanmış olarak işaretle
+	if err := s.userRepo.MarkUserEmailAsVerified(ctx, dbVerificationToken.UserID); err != nil {
+		slog.ErrorContext(ctx, "Service: ConfirmEmailVerification - error marking user email as verified", "userID", dbVerificationToken.UserID.String(), "email", dbVerificationToken.Email, "error", err.Error())
+		return nil, status.Errorf(codes.Internal, "Failed to verify email address")
+	}
+
+	// 3. Kullanılan doğrulama token'ını geçersiz kıl (consumed=true)
+	if err := s.userRepo.MarkEmailVerificationTokenAsUsed(ctx, dbVerificationToken.TokenHash); err != nil {
+		// E-posta doğrulandı, bu hata kritik değil ama loglanmalı.
+		slog.ErrorContext(ctx, "Service: ConfirmEmailVerification - failed to mark verification token as used", "userID", dbVerificationToken.UserID.String(), "tokenHash", dbVerificationToken.TokenHash, "error", err.Error())
+	}
+
+	// Güncellenmiş kullanıcı bilgilerini alıp dön
+	updatedUserInfo, err := s.userRepo.GetUserByID(ctx, dbVerificationToken.UserID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Service: ConfirmEmailVerification - failed to fetch updated user info", "userID", dbVerificationToken.UserID.String(), "error", err.Error())
+		// E-posta doğrulandı, ama güncel bilgiyi dönemiyoruz. Mesajla idare edelim.
+		return &pb.ConfirmEmailVerificationResponse{
+			Message: "Email successfully verified. User details could not be retrieved.",
+		}, nil
+	}
+
+	slog.InfoContext(ctx, "Service: Email successfully verified for user", "userID", dbVerificationToken.UserID.String(), "email", dbVerificationToken.Email)
+	return &pb.ConfirmEmailVerificationResponse{
+		Message: "Email successfully verified.",
+		User:    updatedUserInfo, // E-postası doğrulanmış kullanıcı bilgisi
+	}, nil
 }
 func (s *AuthServiceServer) UpdateUserMetadata(ctx context.Context, req *pb.UpdateUserMetadataRequest) (*pb.UpdateUserMetadataResponse, error) {
 	slog.WarnContext(ctx, "RPC method not implemented", "method", "UpdateUserMetadata")

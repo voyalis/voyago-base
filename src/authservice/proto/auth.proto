@@ -75,18 +75,24 @@ message ConfirmPasswordResetResponse {
 
 // E-posta Doğrulama
 message RequestEmailVerificationRequest {
-  // string email = 1; // Genellikle access_token içinden alınır veya user_id ile
-  string access_token = 1; // Hangi kullanıcının e-postasını doğrulayacağı
+  // E-posta doğrulama talebi için genellikle kullanıcının login olması ve
+  // kendi e-postasını doğrulaması beklenir. Bu yüzden access_token alabiliriz.
+  // VEYA, kayıt sonrası otomatik gönderiliyorsa, email adresi yeterli olabilir.
+  // Şimdilik, kayıtlı bir kullanıcının kendi e-postasını doğrulaması senaryosunu düşünelim.
+  string access_token = 1; // Hangi kullanıcının e-postasını doğrulayacağı (kimlik doğrulama için)
 }
 message RequestEmailVerificationResponse {
-  string message = 1;
+  string message = 1;          // Örn: "E-posta doğrulama linki e-posta adresinize gönderildi."
+  int32 expires_in_seconds = 2; // Token'ın geçerlilik süresi (opsiyonel)
 }
+
 message ConfirmEmailVerificationRequest {
-  string verification_token = 1;
+  string verification_token = 1; // Kullanıcının e-postasından aldığı token
 }
+
 message ConfirmEmailVerificationResponse {
-  UserInfo user = 1; // Doğrulanmış kullanıcı bilgisi
-  string message = 2;
+  string message = 1;         // Örn: "E-posta adresiniz başarıyla doğrulandı."
+  UserInfo user = 2;          // E-postası doğrulanmış güncel kullanıcı bilgisi
 }
 
 // Kullanıcı Metadata Güncelleme
@@ -117,12 +123,12 @@ service AuthService {
   rpc RefreshAccessToken(RefreshAccessTokenRequest) returns (LoginResponse); // MVP Kritik
   rpc Logout(LogoutRequest) returns (LogoutResponse);                       // MVP Kritik
 
-  // Şifre ve Hesap Yönetimi RPC'leri (MVP'de bazıları mock/basit implementasyon olabilir)
+  // Şifre ve Hesap Yönetimi RPC'leri
   rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
   rpc RequestPasswordReset(RequestPasswordResetRequest) returns (RequestPasswordResetResponse);
   rpc ConfirmPasswordReset(ConfirmPasswordResetRequest) returns (ConfirmPasswordResetResponse);
 
-  // E-posta Doğrulama RPC'leri (MVP'de bazıları mock/basit implementasyon olabilir)
+  // E-posta Doğrulama RPC'leri
   rpc RequestEmailVerification(RequestEmailVerificationRequest) returns (RequestEmailVerificationResponse);
   rpc ConfirmEmailVerification(ConfirmEmailVerificationRequest) returns (ConfirmEmailVerificationResponse);
 
