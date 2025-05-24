@@ -12,11 +12,12 @@ import (
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
 
+	"github.com/voyalis/voyago-base/src/authservice/db"          // DB paketi
 	pb "github.com/voyalis/voyago-base/src/authservice/genproto" // Proto importu
-	"github.com/voyalis/voyago-base/src/authservice/db"         // DB paketi
-	"github.com/voyalis/voyago-base/src/authservice/repository" // Repository paketi
-	"github.com/voyalis/voyago-base/src/authservice/service"    // Servis paketi
+	"github.com/voyalis/voyago-base/src/authservice/repository"  // Repository paketimiz
+	"github.com/voyalis/voyago-base/src/authservice/service"     // Servis paketimiz
 )
 
 const (
@@ -48,11 +49,13 @@ func main() {
 		logLevel.Set(slog.LevelDebug)
 	}
 
-	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	handlerOptions := &slog.HandlerOptions{
 		Level:     logLevel,
-		AddSource: true, // Kaynak dosya:satır bilgisini ekler
-	})
-	logger := slog.New(handler)
+		AddSource: true, // Log mesajına kaynak dosya:satır bilgisini ekler
+	}
+	// JSONHandler yerine TextHandler da kullanılabilir (geliştirme için daha okunaklı olabilir)
+	// handler := slog.NewTextHandler(os.Stdout, handlerOptions) 
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, handlerOptions))
 	slog.SetDefault(logger)
 
 	slog.Info("Starting VoyaGo AuthService...",
@@ -64,12 +67,21 @@ func main() {
 	)
 
 	// 1. Veritabanı bağlantısını başlat
-	db.InitDB()
-	// defer db.DB.Close() // Uzun süreli servislerde etkisi az
+	// db/db.go dosyasındaki InitDB() fonksiyonu db.DB global değişkenini set etmeli.
+	db.InitDB() 
+	// defer db.DB.Close() // Uzun süreli servislerde main sonunda defer etkili olmaz.
 
-	// 2. Repository ve Service katmanlarını oluştur
-	userRepo := repository.NewUserRepo(db.DB)
+	// 2. Repository ve Service katmanlarını oluştur (Dependency Injection)
+	// repository/user_repository.go dosyasındaki NewUserRepo, repository.UserRepoInterface dönmeli.
+	userRepo := repository.NewUserRepo(db.DB) 
+	
 	jwtSecret := getEnv(jwtSecretEnv, defaultJWTKey)
+	if jwtSecret == defaultJWTKey { // Bu kontrol zaten isUsingDefaultJWTKey içinde yapılıyor ama burada da log basabiliriz.
+		slog.Warn("SECURITY WARNING: Using default JWT_SECRET_KEY. This is INSECURE and for development only. Set a strong JWT_SECRET_KEY environment variable for production.")
+	}
+
+	// service/auth_service.go dosyasındaki NewAuthServiceServer, 
+	// service.UserRepository (ki bu repository.UserRepoInterface ile aynı olmalı) ve string (secretKey) almalı.
 	authSvcServer := service.NewAuthServiceServer(userRepo, jwtSecret)
 
 	// 3. gRPC sunucusunu yapılandır
@@ -81,30 +93,36 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer(
-		grpc.UnaryInterceptor(loggingInterceptor),
+		grpc.UnaryInterceptor(loggingInterceptor), // Logging interceptor'ını ekliyoruz
 	)
 
 	// 4. Servisleri gRPC sunucusuna kaydet
-	pb.RegisterAuthServiceServer(grpcServer, authSvcServer)
-	registerHealthCheck(grpcServer)
-	reflection.Register(grpcServer)
+	pb.RegisterAuthServiceServer(grpcServer, authSvcServer) // Proto'dan gelen register fonksiyonu
+	registerHealthCheck(grpcServer)                        // Health check servisini kaydet
+	reflection.Register(grpcServer)                        // gRPC reflection'ı kaydet
 
 	slog.Info("AuthService is listening", "port", port)
 	slog.Info("gRPC server started successfully.")
 
+	// Sunucuyu başlat
 	if err := grpcServer.Serve(lis); err != nil {
 		slog.Error("Failed to serve gRPC server", "error", err)
 		os.Exit(1)
 	}
 }
 
+// registerHealthCheck gRPC health check servisini kaydeder.
 func registerHealthCheck(s *grpc.Server) {
 	healthSrv := health.NewServer()
-	healthSrv.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+	// Başlangıçta genel durumu SERVING yapalım.
+	// Daha karmaşık senaryolarda, bağımlılıklar (DB gibi) kontrol edildikten sonra
+	// spesifik servisler için durum (örn: "AuthService") ayarlanabilir.
+	healthSrv.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING) // Tüm servisler için genel durum
 	grpc_health_v1.RegisterHealthServer(s, healthSrv)
 	slog.Info("Successfully registered gRPC health check service.")
 }
 
+// loggingInterceptor her gRPC çağrısı için temel loglama yapar.
 func loggingInterceptor(
 	ctx context.Context,
 	req interface{},
@@ -112,20 +130,23 @@ func loggingInterceptor(
 	handler grpc.UnaryHandler,
 ) (interface{}, error) {
 	startTime := time.Now()
-	// slog.DebugContext(ctx, "gRPC Request Started", "method", info.FullMethod, "request_payload", fmt.Sprintf("%+v", req)) // Payload loglamak riskli olabilir
+	// İstek payload'ını loglamak güvenlik riski oluşturabilir, bu yüzden sadece metod adını logluyoruz.
+	// Gerekirse DEBUG seviyesinde ve hassas veriler maskelenerek payload loglanabilir.
 	slog.InfoContext(ctx, "gRPC Request Started", "method", info.FullMethod)
 
-	resp, err := handler(ctx, req)
+	resp, err := handler(ctx, req) // Asıl RPC metodunu çağır
 
 	duration := time.Since(startTime)
 	if err != nil {
+		// gRPC hataları genellikle status.Status tipindedir, buradan daha fazla detay alabiliriz.
+		st, _ := status.FromError(err)
 		slog.ErrorContext(ctx, "gRPC Request Finished with error",
 			"method", info.FullMethod,
 			"duration", duration.String(),
-			"error", err.Error(), // Hata mesajını string olarak
+			"grpc_code", st.Code().String(), // gRPC hata kodunu logla
+			"error", err.Error(),           // Hatanın string mesajı
 		)
 	} else {
-		// slog.DebugContext(ctx, "gRPC Request Finished successfully", "method", info.FullMethod, "duration", duration.String(), "response_payload", fmt.Sprintf("%+v", resp)) // Payload loglamak riskli olabilir
 		slog.InfoContext(ctx, "gRPC Request Finished successfully",
 			"method", info.FullMethod,
 			"duration", duration.String(),
