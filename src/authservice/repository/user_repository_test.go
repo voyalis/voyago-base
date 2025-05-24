@@ -213,3 +213,114 @@ func TestUserRepo_UpdateUserPassword_Success(t *testing.T) {
     err := repo.UpdateUserPassword(context.Background(), userID, newPasswordHash)
     assert.NoError(t, err); assert.NoError(t, mock.ExpectationsWereMet())
 }
+// --- Email Verification Token Metotları İçin Testler ---
+
+func TestUserRepo_StoreEmailVerificationToken_Success(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	userID := uuid.New()
+	email := "verify.email@example.com"
+	tokenHash := "email_verify_hash_success"
+	expiresAt := time.Now().Add(time.Hour * 24)
+
+	query := regexp.QuoteMeta(`INSERT INTO auth.email_verification_tokens (user_id, email, token_hash, expires_at, consumed) VALUES ($1, $2, $3, $4, FALSE) ON CONFLICT (token_hash) DO UPDATE SET user_id = EXCLUDED.user_id, email = EXCLUDED.email, expires_at = EXCLUDED.expires_at, consumed = FALSE, created_at = NOW()`)
+	mock.ExpectExec(query).
+		WithArgs(userID, email, tokenHash, expiresAt).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := repo.StoreEmailVerificationToken(context.Background(), userID, email, tokenHash, expiresAt)
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUserRepo_GetValidEmailVerificationTokenByHash_Success(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	expectedTokenHash := "valid_email_verify_hash"
+	expectedUserID := uuid.New()
+	expectedEmail := "user.to.verify@example.com"
+	now := time.Now()
+	expectedExpiresAt := now.Add(time.Hour * 12)
+
+	rows := sqlmock.NewRows([]string{"token_hash", "user_id", "email", "expires_at", "created_at", "consumed"}).
+		AddRow(expectedTokenHash, expectedUserID, expectedEmail, expectedExpiresAt, now, false)
+
+	query := regexp.QuoteMeta(`SELECT token_hash, user_id, email, expires_at, created_at, consumed FROM auth.email_verification_tokens WHERE token_hash = $1 AND consumed = FALSE AND expires_at > NOW()`)
+	mock.ExpectQuery(query).
+		WithArgs(expectedTokenHash).
+		WillReturnRows(rows)
+
+	evt, err := repo.GetValidEmailVerificationTokenByHash(context.Background(), expectedTokenHash)
+	require.NoError(t, err)
+	require.NotNil(t, evt)
+	assert.Equal(t, expectedTokenHash, evt.TokenHash)
+	assert.Equal(t, expectedUserID, evt.UserID)
+	assert.Equal(t, expectedEmail, evt.Email)
+	assert.WithinDuration(t, expectedExpiresAt, evt.ExpiresAt, time.Second)
+	assert.False(t, evt.Consumed)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUserRepo_GetValidEmailVerificationTokenByHash_NotFound(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	tokenHash := "nonexistent_email_verify_hash"
+	query := regexp.QuoteMeta(`SELECT token_hash, user_id, email, expires_at, created_at, consumed FROM auth.email_verification_tokens WHERE token_hash = $1 AND consumed = FALSE AND expires_at > NOW()`)
+	mock.ExpectQuery(query).
+		WithArgs(tokenHash).
+		WillReturnError(sql.ErrNoRows)
+
+	evt, err := repo.GetValidEmailVerificationTokenByHash(context.Background(), tokenHash)
+	assert.Nil(t, evt)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "email verification token not found, expired, or consumed")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUserRepo_MarkEmailVerificationTokenAsUsed_Success(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	tokenHash := "consume_this_email_verify_hash"
+	query := regexp.QuoteMeta(`UPDATE auth.email_verification_tokens SET consumed = TRUE WHERE token_hash = $1 AND consumed = FALSE`)
+	mock.ExpectExec(query).
+		WithArgs(tokenHash).
+		WillReturnResult(sqlmock.NewResult(0, 1)) // Bir satır etkilendi
+
+	err := repo.MarkEmailVerificationTokenAsUsed(context.Background(), tokenHash)
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUserRepo_MarkUserEmailAsVerified_Success(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	userID := uuid.New()
+	query := regexp.QuoteMeta(`UPDATE auth.users SET email_verified = TRUE, updated_at = NOW() WHERE id = $1 AND email_verified = FALSE`)
+	mock.ExpectExec(query).
+		WithArgs(userID).
+		WillReturnResult(sqlmock.NewResult(0, 1)) // Bir satır etkilendi
+
+	err := repo.MarkUserEmailAsVerified(context.Background(), userID)
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUserRepo_MarkUserEmailAsVerified_AlreadyVerified(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	userID := uuid.New()
+	query := regexp.QuoteMeta(`UPDATE auth.users SET email_verified = TRUE, updated_at = NOW() WHERE id = $1 AND email_verified = FALSE`)
+	mock.ExpectExec(query).
+		WithArgs(userID).
+		WillReturnResult(sqlmock.NewResult(0, 0)) // Hiçbir satır etkilenmedi (zaten true'ydu)
+
+	err := repo.MarkUserEmailAsVerified(context.Background(), userID)
+	assert.NoError(t, err) // Hata dönmemeli, sadece loglamalı
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
