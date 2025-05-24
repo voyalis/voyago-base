@@ -173,6 +173,156 @@ func TestUserRepo_GetUserByID_NotFound(t *testing.T) {
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
-// TODO: GetUserByEmail, GetUserByID, StoreRefreshToken, GetRefreshTokenByHash,
-// RevokeRefreshTokenByHash, RevokeAllRefreshTokensForUser, UpdateUserLastSignInAt
-// için başarılı ve hata durumlarını içeren kapsamlı unit testler yazılacak.
+func TestUserRepo_StoreRefreshToken_Success(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	userID := uuid.New()
+	tokenHash := "test_token_hash"
+	expiresAt := time.Now().Add(time.Hour * 24 * 7)
+
+	query := regexp.QuoteMeta(`INSERT INTO auth.refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`)
+	mock.ExpectExec(query).
+		WithArgs(userID, tokenHash, expiresAt).
+		WillReturnResult(sqlmock.NewResult(1, 1)) // Bir satır eklendi, bir satır etkilendi
+
+	err := repo.StoreRefreshToken(context.Background(), userID, tokenHash, expiresAt)
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet(), "SQL mock beklentileri karşılanmadı")
+}
+
+func TestUserRepo_StoreRefreshToken_DuplicateKey(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	userID := uuid.New()
+	tokenHash := "duplicate_token_hash"
+	expiresAt := time.Now().Add(time.Hour)
+	pqErr := &pq.Error{Code: "23505"} // Unique constraint violation
+
+	query := regexp.QuoteMeta(`INSERT INTO auth.refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`)
+	mock.ExpectExec(query).
+		WithArgs(userID, tokenHash, expiresAt).
+		WillReturnError(pqErr)
+
+	err := repo.StoreRefreshToken(context.Background(), userID, tokenHash, expiresAt)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refresh token hash already exists")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// --- GetRefreshTokenByHash ---
+func TestUserRepo_GetRefreshTokenByHash_Success(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	expectedID := uuid.New()
+	expectedUserID := uuid.New()
+	tokenHash := "valid_token_hash"
+	now := time.Now()
+	expectedExpiresAt := now.Add(time.Hour)
+
+	rows := sqlmock.NewRows([]string{"id", "user_id", "token_hash", "expires_at", "revoked", "created_at"}).
+		AddRow(expectedID, expectedUserID, tokenHash, expectedExpiresAt, false, now)
+
+	query := regexp.QuoteMeta(
+		`SELECT id, user_id, token_hash, expires_at, revoked, created_at FROM auth.refresh_tokens WHERE token_hash = $1 AND revoked = FALSE AND expires_at > NOW()`)
+	mock.ExpectQuery(query).
+		WithArgs(tokenHash).
+		WillReturnRows(rows)
+
+	rt, err := repo.GetRefreshTokenByHash(context.Background(), tokenHash)
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+	assert.Equal(t, expectedID, rt.ID)
+	assert.Equal(t, expectedUserID, rt.UserID)
+	assert.Equal(t, tokenHash, rt.TokenHash)
+	assert.WithinDuration(t, expectedExpiresAt, rt.ExpiresAt, time.Second) // Zaman karşılaştırması için
+	assert.False(t, rt.Revoked)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUserRepo_GetRefreshTokenByHash_NotFoundOrRevokedOrExpired(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	tokenHash := "not_found_token_hash"
+	query := regexp.QuoteMeta(
+		`SELECT id, user_id, token_hash, expires_at, revoked, created_at FROM auth.refresh_tokens WHERE token_hash = $1 AND revoked = FALSE AND expires_at > NOW()`)
+	mock.ExpectQuery(query).
+		WithArgs(tokenHash).
+		WillReturnError(sql.ErrNoRows)
+
+	rt, err := repo.GetRefreshTokenByHash(context.Background(), tokenHash)
+	assert.Nil(t, rt)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refresh token not found, expired, or revoked")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// --- RevokeRefreshTokenByHash ---
+func TestUserRepo_RevokeRefreshTokenByHash_Success(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	tokenHash := "token_to_revoke"
+	query := regexp.QuoteMeta(
+		`UPDATE auth.refresh_tokens SET revoked = TRUE WHERE token_hash = $1 AND revoked = FALSE`)
+	mock.ExpectExec(query).
+		WithArgs(tokenHash).
+		WillReturnResult(sqlmock.NewResult(0, 1)) // Bir satır etkilendi
+
+	err := repo.RevokeRefreshTokenByHash(context.Background(), tokenHash)
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUserRepo_RevokeRefreshTokenByHash_NoneToRevoke(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	tokenHash := "already_revoked_or_not_found_token"
+	query := regexp.QuoteMeta(
+		`UPDATE auth.refresh_tokens SET revoked = TRUE WHERE token_hash = $1 AND revoked = FALSE`)
+	mock.ExpectExec(query).
+		WithArgs(tokenHash).
+		WillReturnResult(sqlmock.NewResult(0, 0)) // Hiçbir satır etkilenmedi
+
+	err := repo.RevokeRefreshTokenByHash(context.Background(), tokenHash)
+	assert.NoError(t, err) // Fonksiyon hata dönmüyor, sadece logluyor
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// --- RevokeAllRefreshTokensForUser ---
+func TestUserRepo_RevokeAllRefreshTokensForUser_Success(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	userID := uuid.New()
+	query := regexp.QuoteMeta(
+		`UPDATE auth.refresh_tokens SET revoked = TRUE WHERE user_id = $1 AND revoked = FALSE`)
+	mock.ExpectExec(query).
+		WithArgs(userID).
+		WillReturnResult(sqlmock.NewResult(0, 3)) // Örnek olarak 3 token revoke edildi
+
+	err := repo.RevokeAllRefreshTokensForUser(context.Background(), userID)
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// --- UpdateUserLastSignInAt ---
+func TestUserRepo_UpdateUserLastSignInAt_Success(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	userID := uuid.New()
+	query := regexp.QuoteMeta(
+		`UPDATE auth.users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = $1`)
+	mock.ExpectExec(query).
+		WithArgs(userID).
+		WillReturnResult(sqlmock.NewResult(0, 1)) // Bir satır etkilendi
+
+	err := repo.UpdateUserLastSignInAt(context.Background(), userID)
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

@@ -217,8 +217,348 @@ func TestAuthServiceServer_Login_Success(t *testing.T) {
 	}
 	mockRepo.AssertExpectations(t)
 }
+// ... (mevcut importlar ve MockUserRepository aynı kalır) ...
 
-// TODO: Login için yanlış şifre, kullanıcı yok, aktif olmayan kullanıcı senaryoları.
-// TODO: ValidateToken için başarılı, geçersiz token, süresi dolmuş token, aktif olmayan kullanıcı senaryoları.
-// TODO: RefreshAccessToken için başarılı, geçersiz refresh token, süresi dolmuş refresh token, kullanıcı yok/aktif değil senaryoları.
-// TODO: Logout için test.
+func TestAuthServiceServer_Login_UserNotFound(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	testJWTSecret := "test_secret_for_login_notfound"
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+
+	req := &pb.LoginRequest{
+		Email:    "notfound.service@example.com",
+		Password: "AnyPassword123!",
+	}
+
+	// Repository.GetUserByEmail çağrısında "user not found" hatası mock'la
+	// (sql.ErrNoRows'a karşılık gelen bir fmt.Errorf mesajı)
+	mockRepo.On("GetUserByEmail", mock.Anything, req.Email).
+		Return(nil, "", false, fmt.Errorf("user with email '%s' not found", req.Email)).Once()
+		// StoreRefreshToken ve UpdateUserLastSignInAt bu senaryoda çağrılmamalı
+
+	res, err := authService.Login(context.Background(), req)
+
+	assert.Error(t, err, "Hata dönmeliydi")
+	assert.Nil(t, res, "Yanıt nil olmalıydı")
+
+	st, ok := status.FromError(err)
+	require.True(t, ok, "Hata gRPC status formatında olmalıydı")
+	assert.Equal(t, codes.Unauthenticated, st.Code(), "gRPC hata kodu Unauthenticated olmalıydı")
+	assert.Contains(t, st.Message(), "Invalid email or password", "Hata mesajı bekleneni içermeliydi")
+
+	mockRepo.AssertExpectations(t)
+}
+
+func TestAuthServiceServer_Login_IncorrectPassword(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	testJWTSecret := "test_secret_for_login_wrongpass"
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+
+	req := &pb.LoginRequest{
+		Email:    "user.wrongpass@example.com",
+		Password: "IncorrectPassword123!",
+	}
+
+	mockUserID := uuid.New()
+	mockPbUserInfoFromDB := &pb.UserInfo{
+		UserId:        mockUserID.String(),
+		Email:         req.Email,
+		FullName:      "User With Wrong Pass",
+		Roles:         []string{"passenger"},
+		IsActive:      true,
+		EmailVerified: true,
+	}
+	// Gerçek şifre "CorrectPassword123!" olsun, ama biz "IncorrectPassword123!" ile deniyoruz
+	hashedCorrectPassword, _ := bcrypt.GenerateFromPassword([]byte("CorrectPassword123!"), bcrypt.DefaultCost)
+
+	// Repository.GetUserByEmail başarılı dönsün, ama hash farklı olacak
+	mockRepo.On("GetUserByEmail", mock.Anything, req.Email).
+		Return(mockPbUserInfoFromDB, string(hashedCorrectPassword), true, nil).Once()
+		// StoreRefreshToken ve UpdateUserLastSignInAt bu senaryoda çağrılmamalı
+
+	res, err := authService.Login(context.Background(), req)
+
+	assert.Error(t, err, "Hata dönmeliydi")
+	assert.Nil(t, res, "Yanıt nil olmalıydı")
+
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unauthenticated, st.Code())
+	assert.Contains(t, st.Message(), "Invalid email or password")
+
+	mockRepo.AssertExpectations(t)
+}
+
+func TestAuthServiceServer_Login_UserNotActive(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	testJWTSecret := "test_secret_for_login_inactive"
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+
+	req := &pb.LoginRequest{
+		Email:    "inactive.user@example.com",
+		Password: "ValidPassword123!",
+	}
+
+	mockUserID := uuid.New()
+	mockPbUserInfoFromDB := &pb.UserInfo{
+		UserId:        mockUserID.String(),
+		Email:         req.Email,
+		FullName:      "Inactive User",
+		Roles:         []string{"passenger"},
+		IsActive:      false, // Kullanıcı aktif değil
+		EmailVerified: true,
+	}
+	hashedPassword, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+
+	// Repository.GetUserByEmail, kullanıcıyı bulsun ama isActive false dönsün
+	mockRepo.On("GetUserByEmail", mock.Anything, req.Email).
+		Return(mockPbUserInfoFromDB, string(hashedPassword), false, nil).Once()
+
+	res, err := authService.Login(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, res)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.PermissionDenied, st.Code()) // Veya Unauthenticated, servis mantığına göre
+	assert.Contains(t, st.Message(), "User account is disabled")
+
+	mockRepo.AssertExpectations(t)
+}
+
+func TestAuthServiceServer_ValidateToken_Success(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	secretKey := "my_super_secret_key_for_validation"
+	authService := NewAuthServiceServer(mockRepo, secretKey)
+
+	userID := uuid.New()
+	userEmail := "validate.success@example.com"
+	userRoles := []string{"passenger", "editor"}
+
+	// Geçerli bir access token oluşturalım
+	accessClaims := jwt.MapClaims{
+		"sub":   userID.String(),
+		"email": userEmail,
+		"roles": userRoles,
+		"exp":   time.Now().Add(time.Hour * 1).Unix(), // 1 saat geçerli
+		"iat":   time.Now().Unix(),
+	}
+	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
+	signedAccessToken, err := accessToken.SignedString([]byte(secretKey))
+	require.NoError(t, err)
+
+	// GetUserByID çağrısını mock'la
+	expectedPbUserInfo := &pb.UserInfo{
+		UserId:        userID.String(),
+		Email:         userEmail,
+		FullName:      "Validated User",
+		Roles:         userRoles,
+		IsActive:      true,
+		EmailVerified: true,
+	}
+	mockRepo.On("GetUserByID", mock.Anything, userID).Return(expectedPbUserInfo, nil).Once()
+
+	req := &pb.ValidateTokenRequest{Token: signedAccessToken}
+	res, err := authService.ValidateToken(context.Background(), req)
+
+	assert.NoError(t, err)
+	require.NotNil(t, res)
+	require.NotNil(t, res.User)
+	assert.Equal(t, expectedPbUserInfo.UserId, res.User.UserId)
+	assert.Equal(t, expectedPbUserInfo.Email, res.User.Email)
+	assert.ElementsMatch(t, expectedPbUserInfo.Roles, res.User.Roles)
+	assert.True(t, res.User.IsActive)
+
+	mockRepo.AssertExpectations(t)
+}
+
+func TestAuthServiceServer_ValidateToken_InvalidSignature(t *testing.T) {
+	mockRepo := new(MockUserRepository) // Bu testte repo çağrılmayacak ama constructor bekliyor
+	authService := NewAuthServiceServer(mockRepo, "actual_secret_key")
+
+	// Başka bir secret ile imzalanmış token
+	claims := jwt.MapClaims{"sub": "user123", "exp": time.Now().Add(time.Hour).Unix()}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signedWithWrongSecret, _ := token.SignedString([]byte("wrong_secret_key"))
+
+	req := &pb.ValidateTokenRequest{Token: signedWithWrongSecret}
+	res, err := authService.ValidateToken(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, res)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unauthenticated, st.Code())
+	assert.Contains(t, st.Message(), "Invalid or expired access token") // jwt.Parse hatası bu mesajı tetikler
+}
+
+func TestAuthServiceServer_ValidateToken_Expired(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	secretKey := "secret_for_expired_token_test"
+	authService := NewAuthServiceServer(mockRepo, secretKey)
+
+	claims := jwt.MapClaims{
+		"sub":   uuid.NewString(),
+		"email": "expired@example.com",
+		"roles": []string{"passenger"},
+		"exp":   time.Now().Add(-time.Hour * 1).Unix(), // 1 SAAT ÖNCE EXPIRE OLMUŞ
+		"iat":   time.Now().Add(-time.Hour * 2).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signedExpiredToken, _ := token.SignedString([]byte(secretKey))
+
+	req := &pb.ValidateTokenRequest{Token: signedExpiredToken}
+	res, err := authService.ValidateToken(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, res)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unauthenticated, st.Code())
+	assert.Contains(t, st.Message(), "Invalid or expired access token") // jwt.Parse bu hatayı verir
+}
+
+func TestAuthServiceServer_ValidateToken_UserNotActive(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	secretKey := "secret_for_inactive_user_test"
+	authService := NewAuthServiceServer(mockRepo, secretKey)
+
+	userID := uuid.New()
+	claims := jwt.MapClaims{
+		"sub":   userID.String(),
+		"email": "inactive.validate@example.com",
+		"roles": []string{"passenger"},
+		"exp":   time.Now().Add(time.Hour * 1).Unix(),
+		"iat":   time.Now().Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signedToken, _ := token.SignedString([]byte(secretKey))
+
+	// GetUserByID çağrısında IsActive=false dönsün
+	mockRepo.On("GetUserByID", mock.Anything, userID).
+		Return(&pb.UserInfo{UserId: userID.String(), Email: "inactive.validate@example.com", IsActive: false}, nil).Once()
+
+	req := &pb.ValidateTokenRequest{Token: signedToken}
+	res, err := authService.ValidateToken(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, res)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.PermissionDenied, st.Code())
+	assert.Contains(t, st.Message(), "User account is disabled")
+
+	mockRepo.AssertExpectations(t)
+}
+
+
+// --- RefreshAccessToken Testleri ---
+func TestAuthServiceServer_RefreshAccessToken_Success(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	secretKey := "my_refresh_secret_123"
+	authService := NewAuthServiceServer(mockRepo, secretKey)
+
+	userID := uuid.New()
+	rawOldRefreshToken := uuid.NewString() // Client'tan gelen ham refresh token
+	hashedOldRefreshToken := hashRefreshToken(rawOldRefreshToken)
+
+	// Repo.GetRefreshTokenByHash çağrısını mock'la
+	mockDbRefreshToken := &repository.RefreshToken{
+		ID:        uuid.New(),
+		UserID:    userID,
+		TokenHash: hashedOldRefreshToken,
+		ExpiresAt: time.Now().Add(time.Hour * 24 * 7), // Daha geçerli
+		Revoked:   false,
+	}
+	mockRepo.On("GetRefreshTokenByHash", mock.Anything, hashedOldRefreshToken).Return(mockDbRefreshToken, nil).Once()
+
+	// Repo.RevokeRefreshTokenByHash çağrısını mock'la
+	mockRepo.On("RevokeRefreshTokenByHash", mock.Anything, hashedOldRefreshToken).Return(nil).Once()
+
+	// Repo.GetUserByID çağrısını mock'la
+	mockPbUserInfo := &pb.UserInfo{
+		UserId:        userID.String(),
+		Email:         "refreshed.user@example.com",
+		FullName:      "Refreshed User",
+		Roles:         []string{"premium_passenger"},
+		IsActive:      true,
+		EmailVerified: true,
+	}
+	mockRepo.On("GetUserByID", mock.Anything, userID).Return(mockPbUserInfo, nil).Once()
+
+	// Repo.StoreRefreshToken çağrısını mock'la (yeni refresh token için)
+	mockRepo.On("StoreRefreshToken", mock.Anything, userID, mock.AnythingOfType("string"), mock.AnythingOfType("time.Time")).Return(nil).Once()
+
+	req := &pb.RefreshAccessTokenRequest{RefreshToken: rawOldRefreshToken}
+	res, err := authService.RefreshAccessToken(context.Background(), req)
+
+	assert.NoError(t, err)
+	require.NotNil(t, res)
+	require.NotNil(t, res.User)
+	assert.Equal(t, userID.String(), res.User.UserId)
+	assert.NotEmpty(t, res.AccessToken)
+	assert.NotEmpty(t, res.RefreshToken)
+	assert.NotEqual(t, rawOldRefreshToken, res.RefreshToken, "Yeni refresh token üretilmeli")
+	assert.True(t, res.ExpiresIn > 0)
+
+	mockRepo.AssertExpectations(t)
+}
+
+func TestAuthServiceServer_RefreshAccessToken_InvalidOrExpired(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	authService := NewAuthServiceServer(mockRepo, "test_secret")
+
+	rawInvalidRefreshToken := "invalid-refresh-token-string"
+	hashedInvalidRefreshToken := hashRefreshToken(rawInvalidRefreshToken)
+
+	mockRepo.On("GetRefreshTokenByHash", mock.Anything, hashedInvalidRefreshToken).
+		Return(nil, fmt.Errorf("refresh token not found, expired, or revoked")).Once()
+
+	req := &pb.RefreshAccessTokenRequest{RefreshToken: rawInvalidRefreshToken}
+	res, err := authService.RefreshAccessToken(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, res)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unauthenticated, st.Code())
+	assert.Contains(t, st.Message(), "Invalid or expired refresh token")
+
+	mockRepo.AssertExpectations(t)
+}
+
+// --- Logout Testleri ---
+func TestAuthServiceServer_Logout_Success(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	authService := NewAuthServiceServer(mockRepo, "test_secret_logout")
+
+	rawRefreshToken := "token_for_logout"
+	hashedRefreshToken := hashRefreshToken(rawRefreshToken)
+
+	mockRepo.On("RevokeRefreshTokenByHash", mock.Anything, hashedRefreshToken).Return(nil).Once()
+
+	req := &pb.LogoutRequest{RefreshToken: rawRefreshToken}
+	res, err := authService.Logout(context.Background(), req)
+
+	assert.NoError(t, err)
+	require.NotNil(t, res)
+	assert.Equal(t, "Successfully logged out and refresh token revoked.", res.Message)
+
+	mockRepo.AssertExpectations(t)
+}
+
+func TestAuthServiceServer_Logout_NoTokenProvided(t *testing.T) {
+	mockRepo := new(MockUserRepository) // Bu testte repo çağrılmayacak
+	authService := NewAuthServiceServer(mockRepo, "test_secret_logout_no_token")
+
+	req := &pb.LogoutRequest{RefreshToken: ""} // Boş refresh token
+	res, err := authService.Logout(context.Background(), req)
+
+	assert.NoError(t, err)
+	require.NotNil(t, res)
+	assert.Equal(t, "Logged out. No server-side refresh token to revoke.", res.Message)
+
+	mockRepo.AssertExpectations(t) // Hiçbir repo metodu çağrılmadığı için bu da geçerli olmalı
+}
+
+
+// TODO: Diğer RPC'ler için (ChangePassword, RequestPasswordReset vb.) unit testler eklenecek.
