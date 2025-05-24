@@ -28,11 +28,24 @@ env:
 
 jobs:
   test:
-    name: Run Go Tests for AuthService
+    name: Run Unit & Integration Tests for AuthService
     runs-on: ubuntu-latest
+    # --- TEST İÇİN POSTGRES SERVİSİ EKLEYELİM ---
+    services:
+      postgres_test_db: # Servis adı (job içinde bu adla erişilecek)
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: authdb_ci_test # CI için ayrı bir DB adı
+        ports:
+          - 5432:5432 # Runner'ın 5432 portunu konteynerin 5432'sine mapler
+        # Health check, servisin başlamasını bekler
+        options: --health-cmd "pg_isready -U testuser -d authdb_ci_test" --health-interval 10s --health-timeout 5s --health-retries 5
+
     defaults:
       run:
-        working-directory: ./src/authservice # Testleri authservice dizininde çalıştır
+        working-directory: ./src/authservice # Komutların çalışacağı varsayılan dizin
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -40,23 +53,62 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23' # Projenizdeki go versiyonu
-          cache: true # Go modüllerini cache'ler
+          go-version: '1.23'
+          cache: true
+      
+      - name: Install golang-migrate CLI
+        run: |
+          MIGRATE_VERSION="v4.17.1" # Güncel bir versiyon seçin
+          curl -L https://github.com/golang-migrate/migrate/releases/download/${MIGRATE_VERSION}/migrate.linux-amd64.tar.gz | tar xvz
+          sudo mv migrate /usr/local/bin/
+          migrate -version
 
-      - name: Run Go Tidy (Check dependencies)
+      - name: Wait for PostgreSQL service to be ready
+        run: |
+          echo "Waiting for PostgreSQL (service: postgres_test_db mapped to localhost:5432) to start..."
+          max_retries=30
+          count=0
+          until nc -z localhost 5432; do 
+              if [ ${count} -ge ${max_retries} ]; then
+                  echo "PostgreSQL did not start in time."
+                  exit 1
+              fi
+              echo "PostgreSQL (on localhost:5432 for CI service) is unavailable - sleeping"
+              sleep 2
+              count=$((count+1))
+          done
+          echo "PostgreSQL (on localhost:5432 for CI service) is up and running!"
+
+      - name: Apply DB Migrations to test DB
+        working-directory: ./src/authservice # Migrations klasörü ./migrations altında olmalı
+        env: 
+          TEST_DB_URL_CI: "postgres://testuser:testpassword@localhost:5432/authdb_ci_test?sslmode=disable"
+        run: migrate -database "$TEST_DB_URL_CI" -path ./migrations up # ./migrations yolu doğru olmalı
+      
+      - name: Run Go Tidy (from src/authservice)
         run: go mod tidy
 
-      - name: Run Go Vet (Static analysis)
+      - name: Run Go Vet (from src/authservice)
         run: go vet ./...
 
-      - name: Run tests
-        run: go test -v -race -coverprofile=coverage.out ./...
-        # Test kapsamı raporu için:
-        # - name: Upload coverage reports to Codecov
-        #   uses: codecov/codecov-action@v4
-        #   with:
-        #     token: ${{ secrets.CODECOV_TOKEN }} # CODECOV_TOKEN secret'ı GitHub'da ayarlanmalı
-        #     files: ./coverage.out
+      - name: Run tests (Unit and Integration)
+        env: # Testlerin bu CI veritabanına bağlanması için
+          DB_HOST: localhost 
+          DB_PORT: "5432"
+          DB_USER: testuser
+          DB_PASSWORD: testpassword
+          DB_NAME: authdb_ci_test
+          JWT_SECRET_KEY: "ci_test_jwt_secret_for_voyago_auth_xyz123"
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+      
+      - name: Upload coverage to Codecov (Optional)
+        if: success() && github.repository == 'voyalis/voyago-base'
+        uses: codecov/codecov-action@v4
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          files: ./coverage.out # working-directory ./src/authservice olduğu için path doğru
+          # flags: unittests,integrationtests 
 
   build-and-push:
     name: Build & Push AuthService Docker Image

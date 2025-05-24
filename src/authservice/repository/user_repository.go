@@ -38,6 +38,19 @@ type RefreshToken struct {
 	CreatedAt  time.Time
 }
 
+// UserRepoInterface, UserRepo'nun implemente edeceği metotları tanımlar.
+// Bu, service katmanının somut implementasyona değil, bu interface'e bağımlı olmasını sağlar.
+type UserRepoInterface interface {
+	CreateUser(ctx context.Context, email, passwordHash, fullName string) (*User, error)
+	GetUserByEmail(ctx context.Context, email string) (*pb.UserInfo, string /*passwordHash*/, bool /*isActive*/, error)
+	GetUserByID(ctx context.Context, userID uuid.UUID) (*pb.UserInfo, error)
+	StoreRefreshToken(ctx context.Context, userID uuid.UUID, tokenHash string, expiresAt time.Time) error
+	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (*RefreshToken, error)
+	RevokeRefreshTokenByHash(ctx context.Context, tokenHash string) error
+	RevokeAllRefreshTokensForUser(ctx context.Context, userID uuid.UUID) error
+	UpdateUserLastSignInAt(ctx context.Context, userID uuid.UUID) error
+}
+
 type UserRepo struct {
 	db *sql.DB
 }

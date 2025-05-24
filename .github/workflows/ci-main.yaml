@@ -17,7 +17,7 @@ on:
   push:
     # run on pushes to main or release/*
     branches:
-      - main
+      #- main
       - release/*
     paths-ignore:
       - '**/README.md'
