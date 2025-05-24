@@ -3,157 +3,176 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"os"
+	"os" // Hata mesajı kontrolü için
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require" // require.NoError vb. için
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure" // grpc.WithInsecure() yerine
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/voyalis/voyago-base/src/authservice/genproto" // Kendi proto paket yolunuz
 )
 
 const (
-	authServiceAddrEnv = "AUTH_SERVICE_ADDR_E2E_TEST" // CI'da set edilecek ortam değişkeni
-	defaultAuthServiceAddr = "localhost:50051"         // Lokal testler için varsayılan
+	authServiceAddrEnv     = "AUTH_SERVICE_ADDR_E2E_TEST" // CI'da set edilecek ortam değişkeni
+	defaultAuthServiceAddr = "localhost:50051"            // Lokal testler için varsayılan
+	defaultTestTimeout     = 30 * time.Second             // E2E testleri için genel timeout
 )
 
-// getClient, testler için bir AuthService gRPC istemcisi oluşturur.
-func getClient(t *testing.T) pb.AuthServiceClient {
+var testAuthClient pb.AuthServiceClient // Testler arasında yeniden kullanılacak client
+
+// TestMain, E2E testleri için bir kerelik gRPC bağlantısı kurar.
+func TestMain(m *testing.M) {
 	addr := os.Getenv(authServiceAddrEnv)
 	if addr == "" {
 		addr = defaultAuthServiceAddr
-		t.Logf("Environment variable %s not set, using default: %s", authServiceAddrEnv, addr)
+		fmt.Printf("E2E_INFO: Environment variable %s not set, using default: %s\n", authServiceAddrEnv, addr)
 	} else {
-		t.Logf("Using AuthService address from env %s: %s", authServiceAddrEnv, addr)
+		fmt.Printf("E2E_INFO: Using AuthService address from env %s: %s\n", authServiceAddrEnv, addr)
 	}
 
-	// grpc.WithInsecure() deprecated oldu, grpc.WithTransportCredentials(insecure.NewCredentials()) kullanılıyor.
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock(), grpc.WithTimeout(10*time.Second))
-	require.NoError(t, err, "gRPC Dial failed")
-
-	// Test bittiğinde bağlantıyı kapatmak için t.Cleanup kullanmak iyi bir pratiktir.
-	t.Cleanup(func() {
-		err := conn.Close()
-		if err != nil {
-			t.Logf("Error closing gRPC connection: %v", err)
+	conn, err := grpc.NewClient(addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock(), // Bağlantı kurulana kadar bekle
+		grpc.WithTimeout(15*time.Second), // Bağlantı timeout'u
+	)
+	if err != nil {
+		fmt.Printf("E2E_FATAL: gRPC Dial failed during TestMain setup: %v\n", err)
+		os.Exit(1) // Bağlantı kurulamazsa testler çalışamaz
+	}
+	defer func() {
+		fmt.Println("E2E_INFO: Closing gRPC connection in TestMain.")
+		if err := conn.Close(); err != nil {
+			fmt.Printf("E2E_WARN: Error closing gRPC connection: %v\n", err)
 		}
-	})
+	}()
 
-	return pb.NewAuthServiceClient(conn)
+	testAuthClient = pb.NewAuthServiceClient(conn)
+	fmt.Println("E2E_INFO: gRPC client initialized for tests.")
+
+	// Testleri çalıştır
+	exitCode := m.Run()
+	os.Exit(exitCode)
 }
 
 // TestAuthService_EndToEndFlow tüm ana kimlik doğrulama akışını test eder.
 func TestAuthService_EndToEndFlow(t *testing.T) {
-	// Bu testi CI'da koşarken, AUTH_SERVICE_ADDR_E2E_TEST ortam değişkeninin
-	// CI'daki Minikube AuthService servisine port-forward edilmiş adresi göstermesi gerekir.
-	// Lokal testler için localhost:50051 varsayılır.
+	require.NotNil(t, testAuthClient, "gRPC client must be initialized in TestMain")
 
-	client := getClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute) // Test için genel bir timeout
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
 	defer cancel()
 
 	// Her test çalıştığında benzersiz bir e-posta kullanmak için
-	uniqueEmail := fmt.Sprintf("e2e_user_%s@voyago.com", uuid.NewString()[:8])
-	password := "E2eStrongPass123!"
-	fullName := "E2E Test User"
+	uniqueEmail := fmt.Sprintf("e2e_user_%s@voyago.com", uuid.NewString()[:12]) // Daha kısa bir UUID
+	password := "E2eValidPass123!"
+	fullName := "E2E Test User " + uuid.NewString()[:4]
+
+	var registeredUserID string
+	var initialLoginResponse *pb.LoginResponse
+	var refreshedLoginResponse *pb.LoginResponse
 
 	// --- 1. Register ---
 	t.Run("RegisterNewUser", func(t *testing.T) {
 		regReq := &pb.RegisterRequest{Email: uniqueEmail, Password: password, FullName: fullName}
-		regRes, err := client.Register(ctx, regReq)
-		require.NoError(t, err, "Register RPC failed")
+		regRes, err := testAuthClient.Register(ctx, regReq)
+		require.NoError(t, err, "Register RPC should not fail")
 		require.NotNil(t, regRes, "RegisterResponse should not be nil")
 		require.NotNil(t, regRes.User, "RegisterResponse.User should not be nil")
 		assert.Equal(t, uniqueEmail, regRes.User.Email, "Registered email mismatch")
 		assert.Contains(t, regRes.User.Roles, "passenger", "Default role should be passenger")
-		t.Logf("Register successful for %s, UserID: %s", uniqueEmail, regRes.User.UserId)
+		assert.True(t, regRes.User.IsActive, "User should be active upon registration")
+		assert.False(t, regRes.User.EmailVerified, "Email should not be verified upon registration")
+		registeredUserID = regRes.User.UserId // Sonraki adımlar için sakla
+		t.Logf("E2E: Register successful for %s, UserID: %s", uniqueEmail, registeredUserID)
 	})
 
-	var loginRes *pb.LoginResponse // Login ve Refresh'ten gelen tokenları saklamak için
-	var errLogin error
+	// Register başarılı olduysa devam et
+	require.NotEmpty(t, registeredUserID, "UserID must be set after successful registration to proceed")
 
 	// --- 2. Login ---
 	t.Run("LoginUser", func(t *testing.T) {
 		loginReq := &pb.LoginRequest{Email: uniqueEmail, Password: password}
-		loginRes, errLogin = client.Login(ctx, loginReq)
-		require.NoError(t, errLogin, "Login RPC failed")
-		require.NotNil(t, loginRes, "LoginResponse should not be nil")
-		require.NotEmpty(t, loginRes.AccessToken, "AccessToken should not be empty")
-		require.NotEmpty(t, loginRes.RefreshToken, "RefreshToken should not be empty")
-		require.NotNil(t, loginRes.User, "LoginResponse.User should not be nil")
-		assert.Equal(t, uniqueEmail, loginRes.User.Email, "Logged in email mismatch")
-		t.Logf("Login successful for %s. AccessToken (first 10): %s...", uniqueEmail, loginRes.AccessToken[:min(10, len(loginRes.AccessToken))])
+		var err error
+		initialLoginResponse, err = testAuthClient.Login(ctx, loginReq)
+		require.NoError(t, err, "Login RPC should not fail")
+		require.NotNil(t, initialLoginResponse, "LoginResponse should not be nil")
+		require.NotEmpty(t, initialLoginResponse.AccessToken, "AccessToken should not be empty")
+		require.NotEmpty(t, initialLoginResponse.RefreshToken, "RefreshToken should not be empty")
+		require.NotNil(t, initialLoginResponse.User, "LoginResponse.User should not be nil")
+		assert.Equal(t, registeredUserID, initialLoginResponse.User.UserId, "Logged in UserID mismatch")
+		assert.Equal(t, uniqueEmail, initialLoginResponse.User.Email, "Logged in email mismatch")
+		t.Logf("E2E: Login successful for %s.", uniqueEmail)
 	})
 
-	// Login başarılı olduysa devam et
-	if errLogin != nil {
-		t.Fatalf("Cannot proceed with E2E tests as Login failed: %v", errLogin)
-	}
+	require.NotNil(t, initialLoginResponse, "Initial LoginResponse is nil, cannot proceed")
+	require.NotEmpty(t, initialLoginResponse.AccessToken, "Initial AccessToken is empty, cannot proceed")
+	require.NotEmpty(t, initialLoginResponse.RefreshToken, "Initial RefreshToken is empty, cannot proceed")
+
 
 	// --- 3. Validate Access Token ---
 	t.Run("ValidateAccessToken", func(t *testing.T) {
-		valReq := &pb.ValidateTokenRequest{Token: loginRes.AccessToken}
-		valRes, err := client.ValidateToken(ctx, valReq)
-		require.NoError(t, err, "ValidateToken RPC failed")
+		valReq := &pb.ValidateTokenRequest{Token: initialLoginResponse.AccessToken}
+		valRes, err := testAuthClient.ValidateToken(ctx, valReq)
+		require.NoError(t, err, "ValidateToken RPC should not fail with a valid token")
 		require.NotNil(t, valRes, "ValidateTokenResponse should not be nil")
 		require.NotNil(t, valRes.User, "ValidateTokenResponse.User should not be nil")
-		assert.Equal(t, loginRes.User.UserId, valRes.User.UserId, "Validated UserID mismatch")
-		assert.Equal(t, uniqueEmail, valRes.User.Email, "Validated email mismatch")
+		assert.Equal(t, registeredUserID, valRes.User.UserId, "Validated UserID mismatch")
 		assert.True(t, valRes.User.IsActive, "User should be active")
-		t.Logf("ValidateAccessToken successful for UserID: %s", valRes.User.UserId)
+		t.Logf("E2E: ValidateAccessToken successful for UserID: %s", valRes.User.UserId)
 	})
 
 	// --- 4. Refresh Access Token ---
-	var refreshedLoginRes *pb.LoginResponse
-	var errRefresh error
 	t.Run("RefreshAccessToken", func(t *testing.T) {
-		refreshReq := &pb.RefreshAccessTokenRequest{RefreshToken: loginRes.RefreshToken}
-		refreshedLoginRes, errRefresh = client.RefreshAccessToken(ctx, refreshReq)
-		require.NoError(t, errRefresh, "RefreshAccessToken RPC failed")
-		require.NotNil(t, refreshedLoginRes, "Refreshed LoginResponse should not be nil")
-		require.NotEmpty(t, refreshedLoginRes.AccessToken, "New AccessToken should not be empty")
-		require.NotEmpty(t, refreshedLoginRes.RefreshToken, "New RefreshToken should not be empty")
-		assert.NotEqual(t, loginRes.AccessToken, refreshedLoginRes.AccessToken, "AccessToken should be new")
-		assert.NotEqual(t, loginRes.RefreshToken, refreshedLoginRes.RefreshToken, "RefreshToken should be new (rotated)")
-		require.NotNil(t, refreshedLoginRes.User, "Refreshed LoginResponse.User should not be nil")
-		assert.Equal(t, loginRes.User.UserId, refreshedLoginRes.User.UserId, "Refreshed UserID mismatch")
-		t.Logf("RefreshAccessToken successful for UserID: %s. New AccessToken (first 10): %s...", refreshedLoginRes.User.UserId, refreshedLoginRes.AccessToken[:min(10, len(refreshedLoginRes.AccessToken))])
+		require.NotNil(t, initialLoginResponse, "Initial LoginResponse is nil for RefreshAccessToken step")
+		require.NotEmpty(t, initialLoginResponse.RefreshToken, "Initial RefreshToken is empty for RefreshAccessToken step")
+
+		refreshReq := &pb.RefreshAccessTokenRequest{RefreshToken: initialLoginResponse.RefreshToken}
+		var err error
+		refreshedLoginResponse, err = testAuthClient.RefreshAccessToken(ctx, refreshReq)
+		require.NoError(t, err, "RefreshAccessToken RPC should not fail with a valid refresh token")
+		require.NotNil(t, refreshedLoginResponse, "Refreshed LoginResponse should not be nil")
+		require.NotEmpty(t, refreshedLoginResponse.AccessToken, "New AccessToken should not be empty")
+		require.NotEmpty(t, refreshedLoginResponse.RefreshToken, "New RefreshToken should not be empty")
+		
+		t.Logf("E2E: Initial AccessToken: %s", initialLoginResponse.AccessToken)
+		t.Logf("E2E: Refreshed AccessToken: %s", refreshedLoginResponse.AccessToken)
+		t.Logf("E2E: Initial RefreshToken: %s", initialLoginResponse.RefreshToken)
+		t.Logf("E2E: Refreshed RefreshToken: %s", refreshedLoginResponse.RefreshToken)
+
+		assert.NotEqual(t, initialLoginResponse.AccessToken, refreshedLoginResponse.AccessToken, "AccessToken should be new after refresh")
+		assert.NotEqual(t, initialLoginResponse.RefreshToken, refreshedLoginResponse.RefreshToken, "RefreshToken should be new (rotated) after refresh")
+		
+		require.NotNil(t, refreshedLoginResponse.User, "Refreshed LoginResponse.User should not be nil")
+		assert.Equal(t, initialLoginResponse.User.UserId, refreshedLoginResponse.User.UserId, "Refreshed UserID mismatch")
+		t.Logf("E2E: RefreshAccessToken successful for UserID: %s", refreshedLoginResponse.User.UserId)
 	})
-	
-	if errRefresh != nil {
-		t.Fatalf("Cannot proceed with Logout test as RefreshAccessToken failed: %v", errRefresh)
-	}
+
+	require.NotNil(t, refreshedLoginResponse, "Refreshed LoginResponse is nil, cannot proceed with Logout")
+	require.NotEmpty(t, refreshedLoginResponse.RefreshToken, "Refreshed RefreshToken is empty, cannot proceed with Logout")
 
 	// --- 5. Logout ---
 	t.Run("LogoutUser", func(t *testing.T) {
-		// Yenilenmiş refresh token'ı kullanalım
-		logoutReq := &pb.LogoutRequest{RefreshToken: refreshedLoginRes.RefreshToken}
-		logoutRes, err := client.Logout(ctx, logoutReq)
-		require.NoError(t, err, "Logout RPC failed")
+		logoutReq := &pb.LogoutRequest{RefreshToken: refreshedLoginResponse.RefreshToken} // Yenilenmiş refresh token'ı kullan
+		logoutRes, err := testAuthClient.Logout(ctx, logoutReq)
+		require.NoError(t, err, "Logout RPC should not fail")
 		require.NotNil(t, logoutRes, "LogoutResponse should not be nil")
 		assert.Contains(t, logoutRes.Message, "revoked", "Logout message should indicate token revocation")
-		t.Logf("Logout successful for UserID: %s", refreshedLoginRes.User.UserId)
+		t.Logf("E2E: Logout successful for UserID: %s", refreshedLoginResponse.User.UserId)
 
 		// İptal edilmiş refresh token ile tekrar yenileme denemesi (hata vermeli)
-		_, errRefreshAfterLogout := client.RefreshAccessToken(ctx, &pb.RefreshAccessTokenRequest{RefreshToken: refreshedLoginRes.RefreshToken})
+		_, errRefreshAfterLogout := testAuthClient.RefreshAccessToken(ctx, &pb.RefreshAccessTokenRequest{RefreshToken: refreshedLoginResponse.RefreshToken})
 		require.Error(t, errRefreshAfterLogout, "RefreshAccessToken should fail with a revoked token")
 		st, ok := status.FromError(errRefreshAfterLogout)
 		require.True(t, ok, "Error should be a gRPC status error after trying to refresh revoked token")
 		assert.Equal(t, codes.Unauthenticated, st.Code(), "gRPC error code should be Unauthenticated for revoked refresh token")
-		t.Logf("Attempt to refresh revoked token failed as expected: %v", errRefreshAfterLogout)
+		t.Logf("E2E: Attempt to refresh revoked token failed as expected: %v", errRefreshAfterLogout)
 	})
 }
 
 // min helper (eğer bu pakette de gerekirse)
-func min(a, b int) int {
-    if a < b {
-        return a
-    }
-    return b
-}
+// func min(a, b int) int { if a < b { return a }; return b }

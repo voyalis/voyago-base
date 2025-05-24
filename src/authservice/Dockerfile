@@ -1,41 +1,45 @@
-# Go için resmi, küçük bir alpine tabanlı imaj kullanalım
-# Skaffold'un BUILDPLATFORM vs. argümanlarını şimdilik çıkarabiliriz, daha sonra eklenebilir
+# Aşama 1: Build Stage - Go uygulamasını ve migrate CLI'ı derle
 FROM golang:1.23-alpine AS builder
 
-# Çalışma dizinini ayarla
 WORKDIR /app
 
-# Modül bağımlılıklarını önce kopyala ve indir (Docker katman önbelleğinden faydalanmak için)
+# Önce bağımlılıkları çek (Docker katman cache'inden faydalanmak için)
 COPY go.mod go.sum ./
 RUN go mod download
-RUN go mod verify # İsteğe bağlı ama iyi bir pratik
+RUN go mod verify
+
+# Migrate CLI'ı kur
+# En son stabil versiyonu kontrol edin: https://github.com/golang-migrate/migrate/releases
+ARG MIGRATE_VERSION=v4.17.1 
+RUN apk add --no-cache curl tar \
+    && curl -L https://github.com/golang-migrate/migrate/releases/download/${MIGRATE_VERSION}/migrate.linux-amd64.tar.gz | tar xvz \
+    && mv migrate /usr/local/bin/migrate \
+    && migrate -version
 
 # Kaynak kodun geri kalanını kopyala
 COPY . .
 
-# Uygulamayı build et
-# Çıktı dosyasının adını "authservice" olarak değiştirelim
-# CGO_ENABLED=0 statik bir binary üretir, bu da "scratch" gibi minimal imajlarda çalışmasını sağlar
-RUN CGO_ENABLED=0 GOOS=linux go build -v -o /app/authservice ./main.go
-# ./main.go yerine sadece "." da kullanabilirsiniz eğer main paketiniz kök dizindeyse.
+# AuthService uygulamasını build et
+RUN CGO_ENABLED=0 GOOS=linux go build -v -o /app/authservice ./main.go 
+# main.go dosyanızın kök dizinde olduğunu varsayıyorum, eğer cmd/server/main.go gibiyse yolu güncelleyin
 
-# İkinci aşama: Gerçekten küçük bir imaj için "scratch" veya "alpine" kullan
+# ---
+
+# Aşama 2: Final Stage - Çalıştırılabilir imajı oluştur
 FROM alpine:3.19 
-# FROM scratch # Eğer CGO_ENABLED=0 ve hiçbir C bağımlılığınız yoksa scratch daha küçük olur
 
-# CA sertifikaları (HTTPS istekleri veya gRPC TLS için gerekebilir)
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates # HTTPS ve diğer SSL/TLS bağlantıları için
 
 WORKDIR /app
 
-# Build aşamasından sadece derlenmiş binary'yi kopyala
+# Builder stage'inden sadece derlenmiş binary'leri ve migrations'ı kopyala
 COPY --from=builder /app/authservice /app/authservice
+COPY --from=builder /usr/local/bin/migrate /app/migrate 
+COPY ./migrations /app/migrations
 
-# Servisin çalışacağı portu açığa çıkar
+# Servisin çalışacağı port
 EXPOSE 50051
+ENV AUTH_SERVICE_PORT=50051 
 
-# Ortam değişkeni için varsayılan değer (docker run -e ile üzerine yazılabilir)
-ENV AUTH_SERVICE_PORT=50051
-
-# Konteyner başladığında çalışacak komut
+# Konteyner başladığında çalışacak varsayılan komut (AuthService'i başlatır)
 ENTRYPOINT ["/app/authservice"]

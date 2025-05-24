@@ -86,28 +86,50 @@ func (s *AuthServiceServer) Register(ctx context.Context, req *pb.RegisterReques
 // Login RPC metodu
 func (s *AuthServiceServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginResponse, error) {
 	slog.InfoContext(ctx, "Service: Login attempt started", "email", req.Email)
+	// ... (kullanıcı doğrulama ve hata kontrolleri aynı) ...
 	if req.Email == "" || req.Password == "" { slog.WarnContext(ctx, "Service: Login failed - missing email or password", "email", req.Email); return nil, status.Errorf(codes.InvalidArgument, "Email and password are required") }
-	
 	userInfo, storedPasswordHash, isActive, err := s.userRepo.GetUserByEmail(ctx, req.Email)
 	if err != nil { slog.WarnContext(ctx, "Service: Login failed - GetUserByEmail", "email", req.Email, "error", err.Error()); return nil, status.Errorf(codes.Unauthenticated, "Invalid email or password") }
 	if !isActive { slog.WarnContext(ctx, "Service: Login blocked - inactive account", "userID", userInfo.UserId, "email", req.Email); return nil, status.Errorf(codes.PermissionDenied, "User account is disabled") }
 	if !checkPasswordHash(req.Password, storedPasswordHash) { slog.WarnContext(ctx, "Service: Login failed - incorrect password", "userID", userInfo.UserId, "email", req.Email); return nil, status.Errorf(codes.Unauthenticated, "Invalid email or password") }
 
+
+	// Access Token
 	accessTokenExp := time.Now().Add(time.Hour * 1)
-	accessClaims := jwt.MapClaims{ "sub": userInfo.UserId, "email": userInfo.Email, "roles": userInfo.Roles, "exp": accessTokenExp.Unix(), "iat": time.Now().Unix()}
+	accessClaims := jwt.MapClaims{
+		"sub":   userInfo.UserId,
+		"email": userInfo.Email,
+		"roles": userInfo.Roles,
+		"exp":   accessTokenExp.Unix(),
+		"iat":   time.Now().Unix(),
+		"jti":   uuid.NewString(), // YENİ: Benzersiz JWT ID eklendi
+	}
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
 	signedAccessToken, err := accessToken.SignedString(s.jwtSecret)
-	if err != nil { slog.ErrorContext(ctx, "Service: Error signing access token", "userID", userInfo.UserId, "error", err.Error()); return nil, status.Errorf(codes.Internal, "Could not generate access token") }
+	if err != nil {
+		slog.ErrorContext(ctx, "Service: Error signing access token", "userID", userInfo.UserId, "error", err.Error())
+		return nil, status.Errorf(codes.Internal, "Could not generate access token")
+	}
 
+	// Refresh Token
 	rawRefreshToken := uuid.NewString()
 	hashedRefreshToken := hashRefreshToken(rawRefreshToken)
 	refreshTokenExp := time.Now().Add(time.Hour * 24 * 30)
-	parsedUserID, _ := uuid.Parse(userInfo.UserId) // Hata kontrolü yapılmalı
-	if err := s.userRepo.StoreRefreshToken(ctx, parsedUserID, hashedRefreshToken, refreshTokenExp); err != nil { slog.ErrorContext(ctx, "Service: Failed to store refresh token", "userID", userInfo.UserId, "error", err.Error())}
-	if err := s.userRepo.UpdateUserLastSignInAt(ctx, parsedUserID); err != nil { slog.WarnContext(ctx, "Service: Failed to update last_sign_in_at", "userID", userInfo.UserId, "error", err.Error())}
+	parsedUserID, _ := uuid.Parse(userInfo.UserId)
+	if err := s.userRepo.StoreRefreshToken(ctx, parsedUserID, hashedRefreshToken, refreshTokenExp); err != nil {
+		slog.ErrorContext(ctx, "Service: Failed to store refresh token, but proceeding with login", "userID", userInfo.UserId, "error", err.Error())
+	}
+	if err := s.userRepo.UpdateUserLastSignInAt(ctx, parsedUserID); err != nil {
+		slog.WarnContext(ctx, "Service: Failed to update last_sign_in_at", "userID", userInfo.UserId, "error", err.Error())
+	}
 
 	slog.InfoContext(ctx, "Service: Login successful", "userID", userInfo.UserId, "email", userInfo.Email)
-	return &pb.LoginResponse{ User: userInfo, AccessToken: signedAccessToken, RefreshToken: rawRefreshToken, ExpiresIn: int32(time.Until(accessTokenExp).Seconds()), }, nil
+	return &pb.LoginResponse{
+		User:         userInfo,
+		AccessToken:  signedAccessToken,
+		RefreshToken: rawRefreshToken,
+		ExpiresIn:    int32(time.Until(accessTokenExp).Seconds()),
+	}, nil
 }
 
 // ValidateToken RPC metodu
@@ -138,31 +160,50 @@ func (s *AuthServiceServer) ValidateToken(ctx context.Context, req *pb.ValidateT
 // RefreshAccessToken RPC metodu
 func (s *AuthServiceServer) RefreshAccessToken(ctx context.Context, req *pb.RefreshAccessTokenRequest) (*pb.LoginResponse, error) {
 	slog.InfoContext(ctx, "Service: RefreshAccessToken request received")
+	// ... (refresh token doğrulama, eskiyi revoke etme, kullanıcıyı çekme kısımları aynı) ...
 	if req.RefreshToken == "" { slog.WarnContext(ctx, "Service: RefreshAccessToken failed - refresh token is empty"); return nil, status.Errorf(codes.InvalidArgument, "Refresh token is required") }
-	
 	hashedRefreshToken := hashRefreshToken(req.RefreshToken)
 	dbToken, err := s.userRepo.GetRefreshTokenByHash(ctx, hashedRefreshToken)
-	if err != nil { slog.WarnContext(ctx, "Service: Invalid or expired refresh token", "error", err.Error()); return nil, status.Errorf(codes.Unauthenticated, "Invalid or expired refresh token") }
-
+	if err != nil { slog.WarnContext(ctx, "Service: Invalid or expired refresh token", "error", err.Error(), "provided_token_hash_prefix", hashedRefreshToken[:min(8,len(hashedRefreshToken))]); return nil, status.Errorf(codes.Unauthenticated, "Invalid or expired refresh token") }
 	if err := s.userRepo.RevokeRefreshTokenByHash(ctx, dbToken.TokenHash); err != nil { slog.ErrorContext(ctx, "Service: Failed to revoke old refresh token", "userID", dbToken.UserID.String(), "error", err.Error()); return nil, status.Errorf(codes.Internal, "Failed to process refresh token rotation") }
-	
 	userInfo, err := s.userRepo.GetUserByID(ctx, dbToken.UserID)
 	if err != nil || (userInfo != nil && !userInfo.IsActive) { slog.ErrorContext(ctx, "Service: User for refresh token not found or not active", "userID", dbToken.UserID.String(), "error", err); return nil, status.Errorf(codes.Unauthenticated, "User for refresh token is invalid") }
 	if userInfo == nil && err == nil { slog.ErrorContext(ctx, "Service: GetUserByID inconsistency for refresh token", "userID", dbToken.UserID.String()); return nil, status.Errorf(codes.Internal, "Internal error during refresh") }
 
+
+	// Yeni Access Token
 	accessTokenExp := time.Now().Add(time.Hour * 1)
-	accessClaims := jwt.MapClaims{ "sub": userInfo.UserId, "email": userInfo.Email, "roles": userInfo.Roles, "exp": accessTokenExp.Unix(), "iat": time.Now().Unix()}
+	accessClaims := jwt.MapClaims{
+		"sub":   userInfo.UserId,
+		"email": userInfo.Email,
+		"roles": userInfo.Roles,
+		"exp":   accessTokenExp.Unix(),
+		"iat":   time.Now().Unix(),
+		"jti":   uuid.NewString(), // YENİ: Benzersiz JWT ID eklendi
+	}
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
 	signedAccessToken, errToken := accessToken.SignedString(s.jwtSecret)
-	if errToken != nil { slog.ErrorContext(ctx, "Service: Error signing new access token", "userID", userInfo.UserId, "error", errToken.Error()); return nil, status.Errorf(codes.Internal, "Could not generate new access token") }
+	if errToken != nil {
+		slog.ErrorContext(ctx, "Service: Error signing new access token during refresh", "userID", userInfo.UserId, "error", errToken.Error())
+		return nil, status.Errorf(codes.Internal, "Could not generate new access token")
+	}
 
+	// Yeni Refresh Token
 	newRawRefreshToken := uuid.NewString()
 	newHashedRefreshToken := hashRefreshToken(newRawRefreshToken)
 	newRefreshTokenExp := time.Now().Add(time.Hour * 24 * 30)
-	if errStore := s.userRepo.StoreRefreshToken(ctx, dbToken.UserID, newHashedRefreshToken, newRefreshTokenExp); errStore != nil { slog.ErrorContext(ctx, "Service: Failed to store new refresh token", "userID", dbToken.UserID.String(), "error", errStore.Error()); return nil, status.Errorf(codes.Internal, "Could not store new refresh token") }
+	if errStore := s.userRepo.StoreRefreshToken(ctx, dbToken.UserID, newHashedRefreshToken, newRefreshTokenExp); errStore != nil {
+		slog.ErrorContext(ctx, "Service: Failed to store new refresh token during rotation", "userID", dbToken.UserID.String(), "error", errStore.Error())
+		return nil, status.Errorf(codes.Internal, "Could not store new refresh token")
+	}
 
 	slog.InfoContext(ctx, "Service: Access token refreshed successfully", "userID", userInfo.UserId)
-	return &pb.LoginResponse{ User: userInfo, AccessToken: signedAccessToken, RefreshToken: newRawRefreshToken, ExpiresIn: int32(time.Until(accessTokenExp).Seconds()), }, nil
+	return &pb.LoginResponse{
+		User:         userInfo,
+		AccessToken:  signedAccessToken,
+		RefreshToken: newRawRefreshToken,
+		ExpiresIn:    int32(time.Until(accessTokenExp).Seconds()),
+	}, nil
 }
 
 // Logout RPC metodu

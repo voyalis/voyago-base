@@ -3,16 +3,11 @@ name: AuthService CI/CD
 on:
   push:
     branches:
-      - main # Ana geliştirme branch'iniz
-    paths: # Sadece bu dosyalarda değişiklik olduğunda çalışsın
+      - main
+    paths:
       - 'src/authservice/**'
       - '.github/workflows/authservice-ci-cd.yaml'
-      - 'kubernetes-manifests/authservice.yaml'
-      - 'kubernetes-manifests/postgres-auth/**'
-      - 'kubernetes-manifests/auth-jwt-secret.yaml'
-      # skaffold.yaml'ı CI'da kullanmayacağımız için paths'ten çıkarabiliriz.
-      # Ancak lokal geliştirme için önemli olduğundan, değişikliklerini takip etmek isteyebilirsiniz.
-      # Şimdilik bırakalım, ileride CI'dan tamamen çıkarırsak kaldırırız.
+      - 'kubernetes-manifests/**' # Artık migration job'ı da dahil
       - 'skaffold.yaml'
   pull_request:
     branches:
@@ -22,77 +17,61 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # github.repository size "voyalis/voyago-base" gibi bir çıktı verir.
-  IMAGE_NAME: ${{ github.repository_owner }}/${{ github.event.repository.name }}/auth-service # Tam imaj yolu: ghcr.io/voyalis/voyago-base/auth-service
-  K8S_NAMESPACE: default # Minikube için varsayılan namespace
+  IMAGE_NAME_PREFIX: ${{ github.repository_owner }}/${{ github.event.repository.name }}
+  AUTH_SERVICE_IMAGE_NAME: auth-service
+  K8S_NAMESPACE: default
 
 jobs:
   test:
     name: Run Unit & Integration Tests for AuthService
     runs-on: ubuntu-latest
-    # --- TEST İÇİN POSTGRES SERVİSİ EKLEYELİM ---
     services:
-      postgres_test_db: # Servis adı (job içinde bu adla erişilecek)
+      postgres_test_db:
         image: postgres:15-alpine
         env:
           POSTGRES_USER: testuser
           POSTGRES_PASSWORD: testpassword
-          POSTGRES_DB: authdb_ci_test # CI için ayrı bir DB adı
+          POSTGRES_DB: authdb_ci_test
         ports:
-          - 5432:5432 # Runner'ın 5432 portunu konteynerin 5432'sine mapler
-        # Health check, servisin başlamasını bekler
+          - 5432:5432
         options: --health-cmd "pg_isready -U testuser -d authdb_ci_test" --health-interval 10s --health-timeout 5s --health-retries 5
-
     defaults:
       run:
-        working-directory: ./src/authservice # Komutların çalışacağı varsayılan dizin
+        working-directory: ./src/authservice
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.23'
           cache: true
-      
       - name: Install golang-migrate CLI
         run: |
-          MIGRATE_VERSION="v4.17.1" # Güncel bir versiyon seçin
+          MIGRATE_VERSION="v4.17.1"
           curl -L https://github.com/golang-migrate/migrate/releases/download/${MIGRATE_VERSION}/migrate.linux-amd64.tar.gz | tar xvz
           sudo mv migrate /usr/local/bin/
           migrate -version
-
-      - name: Wait for PostgreSQL service to be ready
+      - name: Wait for PostgreSQL service
         run: |
-          echo "Waiting for PostgreSQL (service: postgres_test_db mapped to localhost:5432) to start..."
-          max_retries=30
-          count=0
-          until nc -z localhost 5432; do 
-              if [ ${count} -ge ${max_retries} ]; then
-                  echo "PostgreSQL did not start in time."
-                  exit 1
-              fi
-              echo "PostgreSQL (on localhost:5432 for CI service) is unavailable - sleeping"
-              sleep 2
-              count=$((count+1))
+          echo "Waiting for PostgreSQL (service: postgres_test_db mapped to localhost:5432)..."
+          max_retries=30; count=0
+          until nc -z localhost 5432; do
+            if [ ${count} -ge ${max_retries} ]; then echo "PostgreSQL did not start in time."; exit 1; fi
+            echo "PostgreSQL (localhost:5432) unavailable - sleeping"; sleep 2; count=$((count+1))
           done
-          echo "PostgreSQL (on localhost:5432 for CI service) is up and running!"
-
+          echo "PostgreSQL (localhost:5432) is up!"
       - name: Apply DB Migrations to test DB
-        working-directory: ./src/authservice # Migrations klasörü ./migrations altında olmalı
-        env: 
+        env:
           TEST_DB_URL_CI: "postgres://testuser:testpassword@localhost:5432/authdb_ci_test?sslmode=disable"
-        run: migrate -database "$TEST_DB_URL_CI" -path ./migrations up # ./migrations yolu doğru olmalı
-      
-      - name: Run Go Tidy (from src/authservice)
+        run: migrate -database "$TEST_DB_URL_CI" -path ./migrations up
+      - name: Run Go Tidy
         run: go mod tidy
-
-      - name: Run Go Vet (from src/authservice)
+      - name: Run Go Vet
         run: go vet ./...
-
       - name: Run tests (Unit and Integration)
-        env: # Testlerin bu CI veritabanına bağlanması için
+        env:
+          CI_TEST_ENV: "true" # db.go'nun bu ortam değişkenini okuyup test DB'ye bağlanması için
           DB_HOST: localhost 
           DB_PORT: "5432"
           DB_USER: testuser
@@ -100,54 +79,48 @@ jobs:
           DB_NAME: authdb_ci_test
           JWT_SECRET_KEY: "ci_test_jwt_secret_for_voyago_auth_xyz123"
         run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
-      
       - name: Upload coverage to Codecov (Optional)
         if: success() && github.repository == 'voyalis/voyago-base'
         uses: codecov/codecov-action@v4
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
-          files: ./coverage.out # working-directory ./src/authservice olduğu için path doğru
-          # flags: unittests,integrationtests 
+          files: ./src/authservice/coverage.out # working-directory ./src/authservice olduğu için path ./coverage.out olmalıydı. Düzeltme:
+          # files: ./coverage.out 
 
   build-and-push:
     name: Build & Push AuthService Docker Image
-    needs: test # test job'ı başarılı olursa başlar
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write # GHCR'ye yazmak için
+      packages: write
     outputs:
-      image_digest: ${{ steps.push.outputs.digest }} # Pushlanan imajın digest'i
-      image_tag_sha: ${{ steps.meta.outputs.version }} # sha-xxxxxxx gibi etiket
+      image_tag_sha_short: ${{ steps.meta.outputs.version }} # sha-xxxxxxx formatında
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_PREFIX }}/${{ env.AUTH_SERVICE_IMAGE_NAME }}
           tags: |
-            type=sha,format=short,prefix= # Commit SHA'sının kısa hali (örn: sha-a1b2c3d)
-            type=raw,value=latest,enable={{is_default_branch}} # Sadece main branch ise latest etiketi
-
+            type=sha,format=short,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
       - name: Build and push Docker image
-        id: push # Bu adıma bir ID veriyoruz ki çıktısını kullanabilelim
+        id: push
         uses: docker/build-push-action@v5
         with:
-          context: ./src/authservice # Dockerfile'ın bulunduğu dizin
+          context: ./src/authservice # Dockerfile ve migrations klasörü burada olmalı
           file: ./src/authservice/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -155,149 +128,123 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  deploy-to-minikube:
-    name: Deploy AuthService to Minikube
-    needs: build-and-push # build-and-push job'ından sonra başlar
-    if: github.ref == 'refs/heads/main' # Sadece main branch'e push yapıldığında deploy et
+  deploy-and-e2e-test:
+    name: Deploy to Minikube & Run E2E Tests
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Minikube
-        uses: medyagh/setup-minikube@latest # Veya manusa/actions-setup-minikube@v2.9.0
+        uses: medyagh/setup-minikube@latest
+        with:
+          cache: true
 
       - name: Ensure Kubeconfig is set for Minikube
         run: |
           minikube update-context
           kubectl config use-context minikube
-          # kubectl create namespace ${{ env.K8S_NAMESPACE }} || echo "Namespace '${{ env.K8S_NAMESPACE }}' already exists." 
-          # default namespace için bu satır gereksizdir ve hata verebilir.
+          # kubectl create namespace ${{ env.K8S_NAMESPACE }} || echo "Namespace '${{ env.K8S_NAMESPACE }}' already exists."
 
-      - name: Deploy/Update Kubernetes Manifests
+      - name: Apply Base Kubernetes Manifests (PostgreSQL, Secrets)
         run: |
           echo "Applying PostgreSQL and Secret manifests..."
           kubectl apply -f kubernetes-manifests/postgres-auth/configmap.yaml --namespace=${{ env.K8S_NAMESPACE }}
           kubectl apply -f kubernetes-manifests/postgres-auth/secret.yaml --namespace=${{ env.K8S_NAMESPACE }}
-          kubectl apply -f kubernetes-manifests/auth-jwt-secret.yaml --namespace=${{ env.K8S_NAMESPACE }} # JWT Secret
+          kubectl apply -f kubernetes-manifests/auth-jwt-secret.yaml --namespace=${{ env.K8S_NAMESPACE }}
           kubectl apply -f kubernetes-manifests/postgres-auth/pvc.yaml --namespace=${{ env.K8S_NAMESPACE }}
-          
-          # PostgreSQL Deployment ve Service'i uygula (veya güncelle)
-          # --force ile güncelleme sorunlarını çözebilir, ama dikkatli kullanılmalı
           kubectl apply -f kubernetes-manifests/postgres-auth/deployment.yaml --namespace=${{ env.K8S_NAMESPACE }}
           kubectl apply -f kubernetes-manifests/postgres-auth/service.yaml --namespace=${{ env.K8S_NAMESPACE }}
           
           echo "Waiting for PostgreSQL to be ready..."
           kubectl rollout status deployment/postgres-auth-deployment --namespace=${{ env.K8S_NAMESPACE }} --timeout=180s
 
-          # AuthService manifestini uygula
-          kubectl apply -f kubernetes-manifests/authservice.yaml --namespace=${{ env.K8S_NAMESPACE }}
+      - name: Prepare and Run Database Migration Job
+        env:
+            # Bu ortam değişkenleri auth-migration-job.yaml içindeki envFrom tarafından set edilecek,
+            # ancak Job'ın imajını dinamik olarak set etmek için burada imaj adını alıyoruz.
+            IMAGE_TO_USE_FOR_MIGRATION: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_PREFIX }}/${{ env.AUTH_SERVICE_IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag_sha_short }}
+        run: |
+          echo "Preparing Database Migration Job manifest..."
+          # auth-migration-job.yaml'ı kopyala ve imajı dinamik olarak set et
+          cp kubernetes-manifests/auth-migration-job.yaml auth-migration-job-ci.yaml
+          # 'image: placeholder-image-will-be-set-by-ci' satırını arıyoruz
+          sed -i "s|image: placeholder-image-will-be-set-by-ci|image: ${IMAGE_TO_USE_FOR_MIGRATION}|g" auth-migration-job-ci.yaml
           
-          # Deployment'ın imajını güncelle
-          IMAGE_TO_DEPLOY="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag_sha }}"
-          echo "Setting image for AuthService deployment to: ${IMAGE_TO_DEPLOY}"
-          kubectl set image deployment/authservice authservice=${IMAGE_TO_DEPLOY} --namespace=${{ env.K8S_NAMESPACE }}
+          echo "Applying and running Database Migration Job..."
+          kubectl delete job auth-db-migration-job --namespace=${{ env.K8S_NAMESPACE }} --ignore-not-found=true
+          sleep 5 # Silinmesi için bekleme
+          kubectl apply -f auth-migration-job-ci.yaml --namespace=${{ env.K8S_NAMESPACE }}
+          
+          echo "Waiting for Database Migration Job to complete..."
+          kubectl wait --for=condition=complete job/auth-db-migration-job --namespace=${{ env.K8S_NAMESPACE }} --timeout=300s
+          echo "Database Migration Job completed. Displaying logs (last 50 lines):"
+          kubectl logs job/auth-db-migration-job --namespace=${{ env.K8S_NAMESPACE }} --tail=50 || echo "Migration job logs not available or job failed/no logs."
+          # Job'ın başarılı olup olmadığını kontrol et
+          MIGRATION_SUCCESS=$(kubectl get job auth-db-migration-job -n ${{ env.K8S_NAMESPACE }} -o jsonpath='{.status.succeeded}')
+          if [ "$MIGRATION_SUCCESS" != "1" ]; then
+            echo "Database migration job failed!"
+            exit 1
+          fi
+          echo "Database migration job succeeded."
+
+
+      - name: Deploy AuthService with latest image
+        run: |
+          kubectl apply -f kubernetes-manifests/authservice.yaml --namespace=${{ env.K8S_NAMESPACE }}
+          IMAGE_TO_DEPLOY_AUTHSERVICE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME_PREFIX }}/${{ env.AUTH_SERVICE_IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag_sha_short }}"
+          echo "Setting image for AuthService deployment to: ${IMAGE_TO_DEPLOY_AUTHSERVICE}"
+          kubectl set image deployment/authservice authservice=${IMAGE_TO_DEPLOY_AUTHSERVICE} --namespace=${{ env.K8S_NAMESPACE }}
           
           echo "Waiting for AuthService rollout..."
-          kubectl rollout status deployment/authservice --namespace=${{ env.K8S_NAMESPACE }} --timeout=120s
+          kubectl rollout status deployment/authservice --namespace=${{ env.K8S_NAMESPACE }} --timeout=180s
 
-      - name: Verify Deployments
-        if: success()
+      - name: Install tools for E2E tests (nc)
         run: |
-          echo "Verifying deployments in namespace: ${{ env.K8S_NAMESPACE }}"
-          sleep 30 # Podların tam olarak log üretmeye başlaması için biraz bekleme
-          kubectl get all -n ${{ env.K8S_NAMESPACE }}
-          echo "--- AuthService Logs (max 100 lines) ---"
-          kubectl logs deployment/authservice -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "AuthService logs not (yet) available."
-          echo "--- PostgreSQL Logs (max 100 lines) ---"
-          kubectl logs deployment/postgres-auth-deployment -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "PostgreSQL logs not (yet) available."
+          sudo apt-get update -y
+          sudo apt-get install -y netcat-openbsd # nc için
+          # migrate CLI zaten AuthService imajında var, E2E testler Go ile çalışacak
 
-        # ... (env bloğu ve jobs.test, jobs.build-and-push, jobs.deploy-to-minikube job'ları aynı kalır) ...
-
-  e2e-tests:
-    name: Run E2E Tests on Minikube
-    needs: deploy-to-minikube # deploy-to-minikube başarılı olursa çalışır
-    if: github.ref == 'refs/heads/main' # Sadece main branch'e push yapıldığında
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./src/authservice # E2E testleri de bu dizinden çalıştıracağız
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.23'
-          cache: true # Test bağımlılıklarını da cache'leyebilir
-
-      - name: Install netcat (for port check)
-        run: sudo apt-get update && sudo apt-get install -y netcat-openbsd
-
-      - name: Setup Minikube Kubeconfig (uses context from previous job if available)
-        # Bu adım, Minikube'ün zaten deploy job'ında başlatıldığını varsayar.
-        # Eğer runner'lar farklıysa veya Minikube durumu korunmuyorsa,
-        # burada da bir Minikube setup gerekebilir. Şimdilik aynı runner'da devam ettiğini varsayalım.
-        # VEYA deploy-to-minikube job'ının kubeconfig'ini bir artifact olarak kaydedip burada indirebiliriz.
-        # En basiti, bu job'ın da kendi Minikube'ünü kurmasıdır.
-        # Ancak bu, süreyi uzatır. "needs" ile aynı runner'da çalışmasını umuyoruz.
-        # Daha garantili yol için:
-        uses: medyagh/setup-minikube@latest # Tekrar Minikube kuruyoruz, ama cache'ten faydalanabilir
-        with:
-          cache: true # Minikube imajlarını cache'lemeye çalışır
-
-      - name: Ensure Kubeconfig is set for Minikube
+      - name: Port-forward AuthService gRPC for E2E tests
         run: |
-          minikube update-context
-          kubectl config use-context minikube
-          echo "Current Kube context set to Minikube."
+          echo "Starting AuthService port-forward for E2E tests..."
+          nohup kubectl port-forward svc/authservice 50051:50051 -n ${{ env.K8S_NAMESPACE }} > pf_auth_e2e.log 2>&1 &
+          sleep 10
 
-      - name: Port-forward AuthService gRPC
+      - name: Wait for gRPC port (50051) to be ready on localhost (for E2E)
         run: |
-          echo "Attempting to port-forward svc/authservice from namespace ${{ env.K8S_NAMESPACE }}..."
-          # nohup ile arka plana atıp, bir sonraki adımda çalışmasını bekleyeceğiz
-          nohup kubectl port-forward svc/authservice 50051:50051 -n ${{ env.K8S_NAMESPACE }} > pf.log 2>&1 &
-          echo "Port-forward command issued."
-
-      - name: Wait for gRPC port (50051) to be ready on localhost
-        run: |
-          echo "Waiting for localhost:50051 to be ready..."
-          max_retries=30
-          count=0
+          echo "Waiting for localhost:50051 (AuthService for E2E) to be ready..."
+          max_retries=30; count=0
           until nc -z localhost 50051; do
-            if [ ${count} -ge ${max_retries} ]; then
-              echo "Port 50051 did not become ready in time."
-              echo "Dumping port-forward logs:"
-              cat pf.log || echo "pf.log not found."
-              echo "Dumping kubectl get svc authservice:"
-              kubectl get svc authservice -n ${{ env.K8S_NAMESPACE }} -o yaml || echo "Service not found."
-              echo "Dumping kubectl get pods for authservice:"
-              kubectl get pods -l app=authservice -n ${{ env.K8S_NAMESPACE }} -o yaml || echo "Pods not found."
-              echo "Dumping logs for authservice pods:"
-              POD_NAME=$(kubectl get pods -l app=authservice -n ${{ env.K8S_NAMESPACE }} -o jsonpath='{.items[0].metadata.name}' || echo "")
-              if [ -n "$POD_NAME" ]; then
-                kubectl logs $POD_NAME -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "Could not get logs."
-              fi
-              exit 1
-            fi
-            echo "Port 50051 is unavailable - sleeping for 2 seconds..."
-            sleep 2
-            count=$((count+1))
+            if [ ${count} -ge ${max_retries} ]; then echo "Port 50051 (AuthService) did not become ready for E2E."; cat pf_auth_e2e.log; exit 1; fi
+            echo "Port 50051 (AuthService for E2E) unavailable - sleeping"; sleep 2; count=$((count+1))
           done
-          echo "Port 50051 is up and running on localhost!"
+          echo "Port 50051 (AuthService for E2E) is up!"
 
       - name: Run E2E Tests
+        working-directory: ./src/authservice # E2E testleri de bu dizin altından çalıştıracağız
         env:
-          # Test dosyamız bu ortam değişkenini okuyacak
-          AUTH_SERVICE_ADDR_E2E_TEST: "localhost:50051" 
-          # JWT_SECRET_KEY test içinde mock Repo ile kullanıldığı için burada kritik değil,
-          # ama gerçek bir client gibi davranıyorsak ve token'ı client'ta parse edeceksek lazım olabilir.
-          # Bizim E2E testimiz direkt gRPC client ile konuşuyor, token'ı servis üretiyor.
-        run: go test -v -race ./e2e/... -timeout 3m # E2E testleri e2e/ paketi altında çalıştır
+          AUTH_SERVICE_ADDR_E2E_TEST: "localhost:50051"
+          # JWT_SECRET_KEY'i GitHub secret'tan alıp buraya da verebiliriz,
+          # ama E2E testimiz token içeriğini değil, servisin davranışını test ediyor.
+          # Servis zaten K8s Secret'ından alıyor.
+        run: go test -v -race ./e2e/... -timeout 3m
 
-      - name: Tear down port-forward (Best effort)
-        if: always() # Her zaman çalışsın
+      - name: Tear down AuthService port-forward (Best effort)
+        if: always()
         run: |
-          echo "Attempting to kill port-forward process..."
-          pkill -f "kubectl port-forward svc/authservice 50051:50051" || echo "Port-forward process not found or already killed."
+          echo "Attempting to kill AuthService port-forward process..."
+          pkill -f "kubectl port-forward svc/authservice 50051:50051" || echo "AuthService Port-forward not found or already killed."
+          # cat pf_auth_e2e.log || echo "pf_auth_e2e.log not found." # Çok fazla log üretebilir CI'da
+
+      - name: Verify Deployments (Final Log Check)
+        if: always() # Her zaman çalışsın, hata olsa bile son durumu görelim
+        run: |
+          echo "Final check of deployments in namespace: ${{ env.K8S_NAMESPACE }}"
+          kubectl get all -n ${{ env.K8S_NAMESPACE }}
+          echo "--- AuthService Logs (Last 100 lines) ---"
+          kubectl logs deployment/authservice -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "AuthService logs could not be retrieved."
+          echo "--- PostgreSQL Logs (Last 100 lines) ---"
+          kubectl logs deployment/postgres-auth-deployment -n ${{ env.K8S_NAMESPACE }} --tail=100 || echo "PostgreSQL logs could not be retrieved."

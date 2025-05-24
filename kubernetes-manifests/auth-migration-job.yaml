@@ -1,0 +1,34 @@
+# kubernetes-manifests/auth-migration-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: auth-db-migration-job # Job'ın adı, CI'da bu isimle referans vereceğiz
+  namespace: default # Veya env.K8S_NAMESPACE (CI workflow'daki ile aynı olmalı)
+  labels:
+    app: voyago-authservice
+    component: migration
+spec:
+  ttlSecondsAfterFinished: 120 # Başarılı veya başarısız Job'ların ne kadar süreyle saklanacağı (opsiyonel)
+  template:
+    spec:
+      restartPolicy: Never # Job başarısız olursa yeniden başlatma (OnFailure da olabilir, ama genellikle migration'lar bir kez çalışır)
+      containers:
+      - name: migrate-auth-db-container
+        # CI'da build edilen ve GHCR'ye push'lanan imajı kullanacağız.
+        # Bu image alanı CI workflow'unda dinamik olarak set edilecek.
+        # Şimdilik bir yer tutucu bırakabiliriz veya CI'daki gibi bir format kullanabiliriz.
+        image: placeholder-image-will-be-set-by-ci # Örneğin: ghcr.io/voyalis/voyago-base/auth-service:sha-xxxxxxx
+        imagePullPolicy: IfNotPresent # Veya Always
+        workingDir: /app # Dockerfile'daki WORKDIR ile aynı
+        command: ["/app/migrate"] # İmaj içindeki migrate CLI'ının yolu
+        args:
+          - "-path=/app/migrations" # İmaj içindeki migrations klasörünün yolu
+          - "-database"
+          - "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres-auth-svc:5432/$(POSTGRES_DB)?sslmode=disable"
+          - "up"
+        envFrom: # Veritabanı credentials'larını ConfigMap ve Secret'tan al
+          - configMapRef:
+              name: postgres-auth-config
+          - secretRef:
+              name: postgres-auth-secret
+  backoffLimit: 1 # Başarısız olursa kaç kez yeniden denesin (toplamda 2 deneme)
