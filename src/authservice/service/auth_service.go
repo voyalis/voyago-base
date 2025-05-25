@@ -15,10 +15,12 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/voyalis/voyago-base/src/authservice/genproto"
+	"github.com/voyalis/voyago-base/src/authservice/interceptor"
 	"github.com/voyalis/voyago-base/src/authservice/repository"
 )
 
@@ -53,19 +55,34 @@ type UserRepository interface {
 
 type AuthServiceServer struct {
 	pb.UnimplementedAuthServiceServer
-	userRepo  UserRepository
-	jwtSecret []byte
+	userRepo    UserRepository
+	jwtSecret   []byte
+	rateLimiter *interceptor.IPRateLimiter 
 }
 
-func NewAuthServiceServer(repo UserRepository, secretKeyVal string) *AuthServiceServer {
+// NewAuthServiceServer, UserRepository, JWT secret ve rate limiter yapılandırması ile yeni bir AuthServiceServer oluşturur.
+func NewAuthServiceServer(repo UserRepository, secretKeyVal string, rlConfig interceptor.RateLimiterConfig) *AuthServiceServer { // rlConfig parametresi eklendi
 	if secretKeyVal == "" {
 		slog.Error("JWT_SECRET_KEY must be set and passed to NewAuthServiceServer. Application will panic.")
 		panic("JWT_SECRET_KEY is empty in NewAuthServiceServer")
 	}
 	return &AuthServiceServer{
-		userRepo:  repo,
-		jwtSecret: []byte(secretKeyVal),
+		userRepo:    repo,
+		jwtSecret:   []byte(secretKeyVal),
+		rateLimiter: interceptor.NewIPRateLimiter(rlConfig), // rlConfig burada kullanılıyor
 	}
+}
+
+// YENİ: RateLimitInterceptor metodunu AuthServiceServer'a ekleyelim
+func (s *AuthServiceServer) RateLimitInterceptor() grpc.UnaryServerInterceptor {
+	if s.rateLimiter == nil {
+		// Rate limiter düzgün başlatılmamışsa, pas geçen bir interceptor dön
+		slog.Warn("AuthServiceServer: RateLimiter is nil, creating a passthrough interceptor.")
+		return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+			return handler(ctx, req)
+		}
+	}
+	return s.rateLimiter.UnaryServerInterceptor()
 }
 
 func hashPassword(password string) (string, error) {

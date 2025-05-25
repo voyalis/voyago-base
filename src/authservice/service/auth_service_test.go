@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-	"database/sql" // Gerekli (örn: repository.User.FullName için sql.NullString)
+	"database/sql" // MockUserRepository'de repository.User.FullName için sql.NullString
 	"errors"
 	"fmt"
 	"testing"
@@ -18,7 +18,9 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/voyalis/voyago-base/src/authservice/genproto"
+	"github.com/voyalis/voyago-base/src/authservice/interceptor" // RateLimiterConfig için
 	"github.com/voyalis/voyago-base/src/authservice/repository"
+	"golang.org/x/time/rate" // RateLimiterConfig için
 )
 
 // MockUserRepository, UserRepository interface'ini mock'lar.
@@ -30,7 +32,7 @@ type MockUserRepository struct {
 // (bu service paketinde tanımlı olan) implemente edip etmediğini derleme zamanında kontrol eder.
 var _ UserRepository = (*MockUserRepository)(nil)
 
-// --- MockUserRepository Metot Implementasyonları ---
+// --- MockUserRepository Metot Implementasyonları (TÜM METOTLAR DAHİL) ---
 func (m *MockUserRepository) CreateUser(ctx context.Context, email, passwordHash, fullName string) (*repository.User, error) {
 	args := m.Called(ctx, email, passwordHash, fullName)
 	if args.Get(0) == nil { return nil, args.Error(1) }
@@ -83,13 +85,26 @@ func (m *MockUserRepository) MarkEmailVerificationTokenAsUsed(ctx context.Contex
 func (m *MockUserRepository) MarkUserEmailAsVerified(ctx context.Context, userID uuid.UUID) error {
 	args := m.Called(ctx, userID); return args.Error(0)
 }
+func (m *MockUserRepository) UpdateUserFullName(ctx context.Context, userID uuid.UUID, newFullName string) error {
+	args := m.Called(ctx, userID, newFullName); return args.Error(0)
+}
+
+// Helper: Varsayılan bir RateLimiterConfig oluşturur (unit testler için)
+func newTestRateLimiterConfig() interceptor.RateLimiterConfig {
+	return interceptor.RateLimiterConfig{
+		RequestsPerSecond: rate.Limit(1000), // Testler için yüksek limit, rate limiting'i test etmiyorsak
+		Burst:             2000,
+		ProtectedMethods:  map[string]bool{}, // Bu test dosyasında rate limiting'i değil, RPC'leri test ediyoruz
+		CleanupInterval:   0,                 // Testlerde cleanup goroutine'i başlatma
+	}
+}
 
 // --- Test Fonksiyonları ---
 
 func TestAuthServiceServer_Register_Success(t *testing.T) {
-	mockRepo := new(MockUserRepository)
-	testJWTSecret := "test-jwt-secret-for-authservice"
-	authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+	mockRepo := new(MockUserRepository); testJWTSecret := "test-jwt-secret-for-authservice"
+	rlConfig := newTestRateLimiterConfig()
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret, rlConfig) // rlConfig EKLENDİ
 	req := &pb.RegisterRequest{Email: "newuser.service@example.com", Password: "SecurePassword123$", FullName: "Service Test User"}
 	mockedRepoUserID := uuid.New()
 	mockedRepoUser := &repository.User{ID: mockedRepoUserID, Email: req.Email, FullName: sql.NullString{String: req.FullName, Valid: true}, IsActive: true, EmailVerified: false}
@@ -102,7 +117,9 @@ func TestAuthServiceServer_Register_Success(t *testing.T) {
 }
 
 func TestAuthService_Register_EmailAlreadyExists(t *testing.T) {
-	mockRepo := new(MockUserRepository); testJWTSecret := "test_secret_key";	authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+	mockRepo := new(MockUserRepository); testJWTSecret := "test_secret_key"
+	rlConfig := newTestRateLimiterConfig()
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret, rlConfig) // GÜNCELLENDİ
 	req := &pb.RegisterRequest{Email: "exists.service@example.com", Password: "password123", FullName: "Existing Service User"}
 	mockRepo.On("CreateUser", mock.Anything, req.Email, mock.AnythingOfType("string"), req.FullName).Return(nil, fmt.Errorf("email '%s' already exists", req.Email)).Once()
 	res, err := authService.Register(context.Background(), req)
@@ -111,7 +128,9 @@ func TestAuthService_Register_EmailAlreadyExists(t *testing.T) {
 }
 
 func TestAuthServiceServer_Login_Success(t *testing.T) {
-	mockRepo := new(MockUserRepository); testJWTSecret := "test_secret_key_for_login_123"; authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+	mockRepo := new(MockUserRepository); testJWTSecret := "test_secret_key_for_login_123"
+	rlConfig := newTestRateLimiterConfig()
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret, rlConfig) // GÜNCELLENDİ
 	req := &pb.LoginRequest{Email: "logincandidate@example.com", Password: "ValidPassword123$"}
 	mockUserID := uuid.New()
 	mockPbUserInfoFromDB := &pb.UserInfo{UserId: mockUserID.String(), Email: req.Email, FullName: "Login Test User", Roles: []string{"passenger"}, IsActive: true, EmailVerified: true}
@@ -127,7 +146,9 @@ func TestAuthServiceServer_Login_Success(t *testing.T) {
 }
 
 func TestAuthServiceServer_Login_UserNotFound(t *testing.T) {
-	mockRepo := new(MockUserRepository); testJWTSecret := "test_secret_for_login_notfound"; authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+	mockRepo := new(MockUserRepository); testJWTSecret := "test_secret_for_login_notfound"
+	rlConfig := newTestRateLimiterConfig()
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret, rlConfig) // GÜNCELLENDİ
 	req := &pb.LoginRequest{Email: "notfound.service@example.com", Password: "AnyPassword123!"}
 	mockRepo.On("GetUserByEmail", mock.Anything, req.Email).Return(nil, "", false, fmt.Errorf("user with email '%s' not found", req.Email)).Once()
 	res, err := authService.Login(context.Background(), req)
@@ -136,7 +157,9 @@ func TestAuthServiceServer_Login_UserNotFound(t *testing.T) {
 }
 
 func TestAuthServiceServer_Login_IncorrectPassword(t *testing.T) {
-	mockRepo := new(MockUserRepository); testJWTSecret := "test_secret_for_login_wrongpass"; authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+	mockRepo := new(MockUserRepository); testJWTSecret := "test_secret_for_login_wrongpass"
+	rlConfig := newTestRateLimiterConfig()
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret, rlConfig) // GÜNCELLENDİ
 	req := &pb.LoginRequest{Email: "user.wrongpass@example.com", Password: "IncorrectPassword123!"}
 	mockUserID := uuid.New();	mockPbUserInfoFromDB := &pb.UserInfo{UserId: mockUserID.String(), Email: req.Email, FullName: "User With Wrong Pass", Roles: []string{"passenger"}, IsActive: true, EmailVerified: true}
 	hashedCorrectPassword, _ := bcrypt.GenerateFromPassword([]byte("CorrectPassword123!"), bcrypt.DefaultCost)
@@ -147,7 +170,9 @@ func TestAuthServiceServer_Login_IncorrectPassword(t *testing.T) {
 }
 
 func TestAuthServiceServer_Login_UserNotActive(t *testing.T) {
-	mockRepo := new(MockUserRepository); testJWTSecret := "test_secret_for_login_inactive"; authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+	mockRepo := new(MockUserRepository); testJWTSecret := "test_secret_for_login_inactive"
+	rlConfig := newTestRateLimiterConfig()
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret, rlConfig) // GÜNCELLENDİ
 	req := &pb.LoginRequest{Email: "inactive.user@example.com", Password: "ValidPassword123!"}
 	mockUserID := uuid.New();	mockPbUserInfoFromDB := &pb.UserInfo{UserId: mockUserID.String(), Email: req.Email, FullName: "Inactive User", Roles: []string{"passenger"}, IsActive: false, EmailVerified: true}
 	hashedPassword, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -158,7 +183,9 @@ func TestAuthServiceServer_Login_UserNotActive(t *testing.T) {
 }
 
 func TestAuthServiceServer_ValidateToken_Success(t *testing.T) {
-	mockRepo := new(MockUserRepository);	secret := "secret123_validate_success_v2"; svc := NewAuthServiceServer(mockRepo, secret)
+	mockRepo := new(MockUserRepository);	secret := "secret123_validate_success_v2"
+	rlConfig := newTestRateLimiterConfig()
+	svc := NewAuthServiceServer(mockRepo, secret, rlConfig) // GÜNCELLENDİ
 	userID := uuid.New(); userEmail := "e.validate.v2@x.com"; userRoles := []string{"passenger", "editor"}
 	claims := jwt.MapClaims{"sub": userID.String(), "email": userEmail, "roles": userRoles, "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "jti": uuid.NewString()}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims); signed, _ := token.SignedString([]byte(secret))
@@ -169,7 +196,8 @@ func TestAuthServiceServer_ValidateToken_Success(t *testing.T) {
 }
 
 func TestAuthServiceServer_ValidateToken_InvalidSignature(t *testing.T) {
-	svc := NewAuthServiceServer(new(MockUserRepository), "actual_secret_key_validate_v2")
+	rlConfig := newTestRateLimiterConfig()
+	svc := NewAuthServiceServer(new(MockUserRepository), "actual_secret_key_validate_v2", rlConfig) // GÜNCELLENDİ
 	claims := jwt.MapClaims{"sub": "user123_inv_sig_v2", "exp": time.Now().Add(time.Hour).Unix()};	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signedWithWrongSecret, _ := token.SignedString([]byte("wrong_secret_key_for_sig_v2"))
 	_, err := svc.ValidateToken(context.Background(), &pb.ValidateTokenRequest{Token: signedWithWrongSecret})
@@ -177,7 +205,8 @@ func TestAuthServiceServer_ValidateToken_InvalidSignature(t *testing.T) {
 }
 
 func TestAuthServiceServer_ValidateToken_Expired(t *testing.T) {
-	svc := NewAuthServiceServer(new(MockUserRepository), "secret_expired_validate_v2")
+	rlConfig := newTestRateLimiterConfig()
+	svc := NewAuthServiceServer(new(MockUserRepository), "secret_expired_validate_v2", rlConfig) // GÜNCELLENDİ
 	claims := jwt.MapClaims{"sub": "user_exp_validate_v2", "email": "exp@v.com", "roles": []string{"p"}, "exp": time.Now().Add(-time.Hour).Unix(), "iat": time.Now().Add(-2 * time.Hour).Unix(), "jti": uuid.NewString()}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims);	signedExpiredToken, _ := token.SignedString([]byte("secret_expired_validate_v2"))
 	_, err := svc.ValidateToken(context.Background(), &pb.ValidateTokenRequest{Token: signedExpiredToken})
@@ -185,7 +214,9 @@ func TestAuthServiceServer_ValidateToken_Expired(t *testing.T) {
 }
 
 func TestAuthServiceServer_ValidateToken_UserInactive(t *testing.T) {
-	mockRepo := new(MockUserRepository); secret := "secret_inactive_validate_v2"; svc := NewAuthServiceServer(mockRepo, secret)
+	mockRepo := new(MockUserRepository); secret := "secret_inactive_validate_v2"
+	rlConfig := newTestRateLimiterConfig()
+	svc := NewAuthServiceServer(mockRepo, secret, rlConfig) // GÜNCELLENDİ
 	userID := uuid.New();	claims := jwt.MapClaims{"sub": userID.String(), "email": "inactive.val.v2@v.com", "exp": time.Now().Add(time.Hour).Unix(), "jti": uuid.NewString()}
 	tok, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
 	mockRepo.On("GetUserByID", mock.Anything, userID).Return(&pb.UserInfo{UserId: userID.String(), IsActive: false}, nil).Once()
@@ -195,7 +226,9 @@ func TestAuthServiceServer_ValidateToken_UserInactive(t *testing.T) {
 }
 
 func TestAuthServiceServer_RefreshAccessToken_Success(t *testing.T) {
-	mockRepo := new(MockUserRepository);	secret := "secret_refresh_success_v2"; svc := NewAuthServiceServer(mockRepo, secret)
+	mockRepo := new(MockUserRepository);	secret := "secret_refresh_success_v2"
+	rlConfig := newTestRateLimiterConfig()
+	svc := NewAuthServiceServer(mockRepo, secret, rlConfig) // GÜNCELLENDİ
 	userID := uuid.New(); rawOldRefreshToken := uuid.NewString(); hashedOldRefreshToken := hashToken(rawOldRefreshToken)
 	dbToken := &repository.RefreshToken{UserID: userID, TokenHash: hashedOldRefreshToken, ExpiresAt: time.Now().Add(time.Hour)}
 	mockRepo.On("GetRefreshTokenByHash", mock.Anything, hashedOldRefreshToken).Return(dbToken, nil).Once()
@@ -209,7 +242,9 @@ func TestAuthServiceServer_RefreshAccessToken_Success(t *testing.T) {
 }
 
 func TestAuthServiceServer_RefreshAccessToken_InvalidToken(t *testing.T) {
-	mockRepo := new(MockUserRepository); svc := NewAuthServiceServer(mockRepo, "secret_refresh_invalid_v2")
+	mockRepo := new(MockUserRepository)
+	rlConfig := newTestRateLimiterConfig()
+	svc := NewAuthServiceServer(mockRepo, "secret_refresh_invalid_v2", rlConfig) // GÜNCELLENDİ
 	rawInvalidToken := "invalid-refresh-v2"; hashedInvalidToken := hashToken(rawInvalidToken)
 	mockRepo.On("GetRefreshTokenByHash", mock.Anything, hashedInvalidToken).Return(nil, errors.New("not found")).Once()
 	_, err := svc.RefreshAccessToken(context.Background(), &pb.RefreshAccessTokenRequest{RefreshToken: rawInvalidToken})
@@ -218,7 +253,9 @@ func TestAuthServiceServer_RefreshAccessToken_InvalidToken(t *testing.T) {
 }
 
 func TestAuthServiceServer_Logout_Success(t *testing.T) {
-	mockRepo := new(MockUserRepository); svc := NewAuthServiceServer(mockRepo, "secret_logout_success_v2")
+	mockRepo := new(MockUserRepository)
+	rlConfig := newTestRateLimiterConfig()
+	svc := NewAuthServiceServer(mockRepo, "secret_logout_success_v2", rlConfig) // GÜNCELLENDİ
 	rawRefreshToken := "logout_token_v2"; hashedRefreshToken := hashToken(rawRefreshToken)
 	mockRepo.On("RevokeRefreshTokenByHash", mock.Anything, hashedRefreshToken).Return(nil).Once()
 	resp, err := svc.Logout(context.Background(), &pb.LogoutRequest{RefreshToken: rawRefreshToken})
@@ -227,13 +264,16 @@ func TestAuthServiceServer_Logout_Success(t *testing.T) {
 }
 
 func TestAuthServiceServer_Logout_NoTokenProvided(t *testing.T) {
-	svc := NewAuthServiceServer(new(MockUserRepository), "secret_logout_notoken_v2")
+	rlConfig := newTestRateLimiterConfig()
+	svc := NewAuthServiceServer(new(MockUserRepository), "secret_logout_notoken_v2", rlConfig) // GÜNCELLENDİ
 	resp, err := svc.Logout(context.Background(), &pb.LogoutRequest{RefreshToken: ""})
 	require.NoError(t, err); assert.Contains(t, resp.Message, "No server-side refresh token")
 }
 
 func TestAuthServiceServer_RequestPasswordReset_Success(t *testing.T) {
-	mockRepo := new(MockUserRepository); svc := NewAuthServiceServer(mockRepo, "test-secret-pwd-reset-v2")
+	mockRepo := new(MockUserRepository)
+	rlConfig := newTestRateLimiterConfig()
+	svc := NewAuthServiceServer(mockRepo, "test-secret-pwd-reset-v2", rlConfig) // GÜNCELLENDİ
 	email := "user.req.reset.v2@example.com"; userID := uuid.New()
 	mockUserInfo := &pb.UserInfo{UserId: userID.String(), Email: email, IsActive: true}
 	mockRepo.On("GetUserByEmail", mock.Anything, email).Return(mockUserInfo, "anyhash", true, nil).Once()
@@ -245,7 +285,9 @@ func TestAuthServiceServer_RequestPasswordReset_Success(t *testing.T) {
 }
 
 func TestAuthServiceServer_RequestPasswordReset_UserNotFoundOrInactive(t *testing.T) {
-	mockRepo := new(MockUserRepository); svc := NewAuthServiceServer(mockRepo, "test-secret-pwd-reset-notfound-v2")
+	mockRepo := new(MockUserRepository)
+	rlConfig := newTestRateLimiterConfig()
+	svc := NewAuthServiceServer(mockRepo, "test-secret-pwd-reset-notfound-v2", rlConfig) // GÜNCELLENDİ
 	email := "notfound.reset.v2@example.com"
 	mockRepo.On("GetUserByEmail", mock.Anything, email).Return(nil, "", false, errors.New("user not found")).Once()
 	req := &pb.RequestPasswordResetRequest{Email: email}
@@ -255,7 +297,9 @@ func TestAuthServiceServer_RequestPasswordReset_UserNotFoundOrInactive(t *testin
 }
 
 func TestAuthServiceServer_ConfirmPasswordReset_Success(t *testing.T) {
-	mockRepo := new(MockUserRepository); svc := NewAuthServiceServer(mockRepo, "test-secret-pwd-confirm-v2")
+	mockRepo := new(MockUserRepository)
+	rlConfig := newTestRateLimiterConfig()
+	svc := NewAuthServiceServer(mockRepo, "test-secret-pwd-confirm-v2", rlConfig) // GÜNCELLENDİ
 	rawToken := "valid-raw-reset-token-v2"; hashedToken := hashToken(rawToken); userID := uuid.New(); newPassword := "NewSecureP@ss1v2"
 	mockDbResetToken := &repository.PasswordResetToken{TokenHash: hashedToken, UserID: userID, ExpiresAt: time.Now().Add(10 * time.Minute), Consumed: false}
 	mockRepo.On("GetValidPasswordResetTokenByHash", mock.Anything, hashedToken).Return(mockDbResetToken, nil).Once()
@@ -269,7 +313,9 @@ func TestAuthServiceServer_ConfirmPasswordReset_Success(t *testing.T) {
 }
 
 func TestAuthServiceServer_ConfirmPasswordReset_InvalidToken(t *testing.T) {
-	mockRepo := new(MockUserRepository); svc := NewAuthServiceServer(mockRepo, "test-secret-pwd-confirm-invalid-v2")
+	mockRepo := new(MockUserRepository)
+	rlConfig := newTestRateLimiterConfig()
+	svc := NewAuthServiceServer(mockRepo, "test-secret-pwd-confirm-invalid-v2", rlConfig) // GÜNCELLENDİ
 	rawToken := "invalid-or-expired-token-v2"; hashedToken := hashToken(rawToken); newPassword := "NewSecureP@ss1v2"
 	mockRepo.On("GetValidPasswordResetTokenByHash", mock.Anything, hashedToken).Return(nil, errors.New("token not found, expired, or consumed")).Once()
 	req := &pb.ConfirmPasswordResetRequest{ResetToken: rawToken, NewPassword: newPassword}
@@ -280,7 +326,9 @@ func TestAuthServiceServer_ConfirmPasswordReset_InvalidToken(t *testing.T) {
 
 // --- E-posta Doğrulama RPC'leri İçin Unit Testler ---
 func TestAuthServiceServer_RequestEmailVerification_Success(t *testing.T) {
-	mockRepo := new(MockUserRepository);	testJWTSecret := "test_secret_email_verif_req_success_v2";	authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+	mockRepo := new(MockUserRepository);	testJWTSecret := "test_secret_email_verif_req_success_v2"
+	rlConfig := newTestRateLimiterConfig()
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret, rlConfig) // GÜNCELLENDİ
 	userID := uuid.New(); userEmail := "unverified.user.req.v2@example.com"; userRoles := []string{"passenger"}
 	accessClaims := jwt.MapClaims{ "sub": userID.String(), "email": userEmail, "roles": userRoles, "exp": time.Now().Add(time.Hour * 1).Unix(), "iat": time.Now().Unix(), "jti": uuid.NewString()}
 	accessTokenJwt := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims);	signedAccessToken, errToken := accessTokenJwt.SignedString([]byte(testJWTSecret)); require.NoError(t, errToken)
@@ -294,7 +342,9 @@ func TestAuthServiceServer_RequestEmailVerification_Success(t *testing.T) {
 }
 
 func TestAuthServiceServer_RequestEmailVerification_AlreadyVerified(t *testing.T) {
-	mockRepo := new(MockUserRepository); testJWTSecret := "test_secret_email_already_verified_v2"; authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+	mockRepo := new(MockUserRepository); testJWTSecret := "test_secret_email_already_verified_v2"
+	rlConfig := newTestRateLimiterConfig()
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret, rlConfig) // GÜNCELLENDİ
 	userID := uuid.New(); userEmail := "already.verified.v2@example.com"
 	accessClaims := jwt.MapClaims{"sub": userID.String(), "email": userEmail, "exp": time.Now().Add(time.Hour).Unix(), "jti": uuid.NewString()}; accessTokenJwt := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims); signedAccessToken, _ := accessTokenJwt.SignedString([]byte(testJWTSecret))
 	mockValidatedUser := &pb.UserInfo{UserId: userID.String(), Email: userEmail, IsActive: true, EmailVerified: true }
@@ -306,9 +356,11 @@ func TestAuthServiceServer_RequestEmailVerification_AlreadyVerified(t *testing.T
 }
 
 func TestAuthServiceServer_ConfirmEmailVerification_Success(t *testing.T) {
-	mockRepo := new(MockUserRepository); testJWTSecret := "test_secret_confirm_email_success_v2"; authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+	mockRepo := new(MockUserRepository); testJWTSecret := "test_secret_confirm_email_success_v2"
+	rlConfig := newTestRateLimiterConfig()
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret, rlConfig) // GÜNCELLENDİ
 	rawToken := "raw_email_verification_token_confirm_v2"; hashedToken := hashToken(rawToken); userID := uuid.New(); userEmail := "confirm.this.email.v2@example.com"
-	mockDbVerificationToken := &repository.EmailVerificationToken{ TokenHash: hashedToken, UserID: userID, Email: userEmail, ExpiresAt: time.Now().Add(time.Hour), Consumed:  false, }
+	mockDbVerificationToken := &repository.EmailVerificationToken{ TokenHash: hashedToken, UserID: userID, Email: userEmail, ExpiresAt: time.Now().Add(time.Hour), Consumed:	false, }
 	mockRepo.On("GetValidEmailVerificationTokenByHash", mock.Anything, hashedToken).Return(mockDbVerificationToken, nil).Once()
 	mockRepo.On("MarkUserEmailAsVerified", mock.Anything, userID).Return(nil).Once()
 	mockRepo.On("MarkEmailVerificationTokenAsUsed", mock.Anything, hashedToken).Return(nil).Once()
@@ -323,183 +375,92 @@ func TestAuthServiceServer_ConfirmEmailVerification_Success(t *testing.T) {
 
 func TestAuthServiceServer_ConfirmEmailVerification_InvalidToken(t *testing.T) {
 	mockRepo := new(MockUserRepository)
-	testJWTSecret := "test_secret_confirm_email_invalid_v3" // Farklı bir secret ismi kullanabiliriz
-	authService := NewAuthServiceServer(mockRepo, testJWTSecret)
-
-	rawToken := "invalid_or_expired_email_token_v3"
-	hashedToken := hashToken(rawToken) // Bu fonksiyon service paketinde tanımlı olmalı
-
-	// GetValidEmailVerificationTokenByHash çağrıldığında hata dönmesini mock'la
-	mockRepo.On("GetValidEmailVerificationTokenByHash", mock.Anything, hashedToken).
-		Return(nil, fmt.Errorf("email verification token not found, expired, or consumed")).Once()
-
+	testJWTSecret := "test_secret_confirm_email_invalid_v3"
+	rlConfig := newTestRateLimiterConfig()
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret, rlConfig) // GÜNCELLENDİ
+	rawToken := "invalid_or_expired_email_token_v3"; hashedToken := hashToken(rawToken)
+	mockRepo.On("GetValidEmailVerificationTokenByHash", mock.Anything, hashedToken).Return(nil, fmt.Errorf("email verification token not found, expired, or consumed")).Once()
 	req := &pb.ConfirmEmailVerificationRequest{VerificationToken: rawToken}
 	res, err := authService.ConfirmEmailVerification(context.Background(), req)
-
 	assert.Error(t, err, "ConfirmEmailVerification bir hata döndürmeliydi")
-	// Hata durumunda response'un kendisi nil olmalı, res.User değil.
-	assert.Nil(t, res, "Hata durumunda response (res) nil olmalıydı") 
-
-	st, ok := status.FromError(err)
-	require.True(t, ok, "Hata gRPC status formatında olmalıydı")
+	assert.Nil(t, res, "Hata durumunda response (res) nil olmalıydı")
+	st, ok := status.FromError(err); require.True(t, ok, "Hata gRPC status formatında olmalıydı")
 	assert.Equal(t, codes.InvalidArgument, st.Code(), "gRPC hata kodu InvalidArgument olmalıydı")
-	// Servis katmanındaki ConfirmEmailVerification'da dönen hata mesajı:
-	// "Invalid, expired, or already used verification token"
 	assert.Contains(t, st.Message(), "Invalid, expired, or already used verification token", "Hata mesajı bekleneni içermeliydi")
-
 	mockRepo.AssertExpectations(t)
 }
 
 // --- ChangePassword RPC'si İçin Unit Testler ---
-
 func TestAuthServiceServer_ChangePassword_Success(t *testing.T) {
 	mockRepo := new(MockUserRepository)
-	testJWTSecret := "test_secret_for_change_password"
-	authService := NewAuthServiceServer(mockRepo, testJWTSecret)
-
-	userID := uuid.New()
-	userEmail := "changepass.user@example.com"
-	oldPassword := "OldSecurePassword123!"
-	newPassword := "NewSecurePassword456$"
-
-	// Geçerli bir access token oluşturalım
-	accessClaims := jwt.MapClaims{
-		"sub":   userID.String(), "email": userEmail, "roles": []string{"passenger"},
-		"exp":   time.Now().Add(time.Hour).Unix(), "iat":   time.Now().Unix(), "jti":   uuid.NewString(),
-	}
-	accessTokenJwt := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
-	signedAccessToken, _ := accessTokenJwt.SignedString([]byte(testJWTSecret))
-
-	req := &pb.ChangePasswordRequest{
-		AccessToken: signedAccessToken,
-		OldPassword: oldPassword,
-		NewPassword: newPassword,
-	}
-
-	// ValidateToken içindeki GetUserByID çağrısını mock'la
+	testJWTSecret := "test_secret_for_change_password_v2" // Secret'ları testler arasında benzersiz yapmak iyi bir pratiktir
+	rlConfig := newTestRateLimiterConfig()
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret, rlConfig) // GÜNCELLENDİ
+	userID := uuid.New(); userEmail := "changepass.user.v2@example.com"; oldPassword := "OldSecurePassword123!"; newPassword := "NewSecurePassword456$"
+	accessClaims := jwt.MapClaims{ "sub": userID.String(), "email": userEmail, "roles": []string{"passenger"}, "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "jti": uuid.NewString(),	}
+	accessTokenJwt := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims);	signedAccessToken, _ := accessTokenJwt.SignedString([]byte(testJWTSecret))
+	req := &pb.ChangePasswordRequest{	AccessToken: signedAccessToken,	OldPassword: oldPassword,	NewPassword: newPassword,}
 	mockValidatedUser := &pb.UserInfo{UserId: userID.String(), Email: userEmail, IsActive: true}
 	mockRepo.On("GetUserByID", mock.Anything, userID).Return(mockValidatedUser, nil).Once()
-
-	// GetUserByEmail çağrısını mock'la (eski şifre hash'ini almak için)
 	hashedOldPassword, _ := bcrypt.GenerateFromPassword([]byte(oldPassword), bcrypt.DefaultCost)
 	mockRepo.On("GetUserByEmail", mock.Anything, userEmail).Return(mockValidatedUser, string(hashedOldPassword), true, nil).Once()
-
-	// UpdateUserPassword çağrısını mock'la
 	mockRepo.On("UpdateUserPassword", mock.Anything, userID, mock.AnythingOfType("string")).Return(nil).Once()
-
-	// RevokeAllRefreshTokensForUser çağrısını mock'la
 	mockRepo.On("RevokeAllRefreshTokensForUser", mock.Anything, userID).Return(nil).Once()
-
 	res, err := authService.ChangePassword(context.Background(), req)
-
-	require.NoError(t, err)
-	require.NotNil(t, res)
-	assert.Equal(t, "Password changed successfully.", res.Message)
-
+	require.NoError(t, err); require.NotNil(t, res); assert.Equal(t, "Password changed successfully.", res.Message)
 	mockRepo.AssertExpectations(t)
 }
 
 func TestAuthServiceServer_ChangePassword_IncorrectOldPassword(t *testing.T) {
 	mockRepo := new(MockUserRepository)
-	testJWTSecret := "test_secret_change_pass_wrong_old"
-	authService := NewAuthServiceServer(mockRepo, testJWTSecret)
-
-	userID := uuid.New(); userEmail := "wrongoldpass@example.com"
-	accessClaims := jwt.MapClaims{"sub": userID.String(), "email": userEmail, "exp": time.Now().Add(time.Hour).Unix(), "jti": uuid.NewString()}
-	accessTokenJwt := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims);	signedAccessToken, _ := accessTokenJwt.SignedString([]byte(testJWTSecret))
-
+	testJWTSecret := "test_secret_change_pass_wrong_old_v2"
+	rlConfig := newTestRateLimiterConfig()
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret, rlConfig) // GÜNCELLENDİ
+	userID := uuid.New(); userEmail := "wrongoldpass.v2@example.com"
+	accessClaims := jwt.MapClaims{"sub": userID.String(), "email": userEmail, "exp": time.Now().Add(time.Hour).Unix(), "jti": uuid.NewString()};	accessTokenJwt := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims);	signedAccessToken, _ := accessTokenJwt.SignedString([]byte(testJWTSecret))
 	req := &pb.ChangePasswordRequest{AccessToken: signedAccessToken, OldPassword: "wrong_old_password", NewPassword: "NewPassword123!"}
-
 	mockValidatedUser := &pb.UserInfo{UserId: userID.String(), Email: userEmail, IsActive: true}
-	mockRepo.On("GetUserByID", mock.Anything, userID).Return(mockValidatedUser, nil).Once() // ValidateToken için
-
+	mockRepo.On("GetUserByID", mock.Anything, userID).Return(mockValidatedUser, nil).Once()
 	correctOldPasswordHash, _ := bcrypt.GenerateFromPassword([]byte("correct_old_password"), bcrypt.DefaultCost)
-	mockRepo.On("GetUserByEmail", mock.Anything, userEmail).Return(mockValidatedUser, string(correctOldPasswordHash), true, nil).Once() // Eski şifre kontrolü için
-
+	mockRepo.On("GetUserByEmail", mock.Anything, userEmail).Return(mockValidatedUser, string(correctOldPasswordHash), true, nil).Once()
 	res, err := authService.ChangePassword(context.Background(), req)
-
-	assert.Error(t, err)
-	assert.Nil(t, res)
-	st, ok := status.FromError(err); require.True(t, ok)
-	assert.Equal(t, codes.Unauthenticated, st.Code())
-	assert.Contains(t, st.Message(), "Incorrect old password")
-
+	assert.Error(t, err); assert.Nil(t, res);	st, ok := status.FromError(err); require.True(t, ok);	assert.Equal(t, codes.Unauthenticated, st.Code()); assert.Contains(t, st.Message(), "Incorrect old password")
 	mockRepo.AssertExpectations(t)
 }
 
-
-// --- YENİ MOCK METOT ---
-func (m *MockUserRepository) UpdateUserFullName(ctx context.Context, userID uuid.UUID, newFullName string) error {
-	args := m.Called(ctx, userID, newFullName)
-	return args.Error(0)
-}
-
 // --- UpdateUserMetadata RPC'si İçin Unit Testler ---
-
 func TestAuthServiceServer_UpdateUserMetadata_Success(t *testing.T) {
 	mockRepo := new(MockUserRepository)
-	testJWTSecret := "test_secret_update_metadata_success"
-	authService := NewAuthServiceServer(mockRepo, testJWTSecret)
-
-	userID := uuid.New()
-	userEmail := "metadata.update@example.com"
-	newFullName := "Updated User FullName"
-
-	// Geçerli bir access token oluşturalım
-	accessClaims := jwt.MapClaims{
-		"sub": userID.String(), "email": userEmail, "roles": []string{"passenger"},
-		"exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "jti": uuid.NewString(),
-	}
-	accessTokenJwt := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
-	signedAccessToken, _ := accessTokenJwt.SignedString([]byte(testJWTSecret))
-
+	testJWTSecret := "test_secret_update_metadata_success_v2"
+	rlConfig := newTestRateLimiterConfig()
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret, rlConfig) // GÜNCELLENDİ
+	userID := uuid.New(); userEmail := "metadata.update.v2@example.com"; newFullName := "Updated User FullName V2"
+	accessClaims := jwt.MapClaims{ "sub": userID.String(), "email": userEmail, "roles": []string{"passenger"}, "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "jti": uuid.NewString(),	}
+	accessTokenJwt := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims);	signedAccessToken, _ := accessTokenJwt.SignedString([]byte(testJWTSecret))
 	req := &pb.UpdateUserMetadataRequest{AccessToken: signedAccessToken, FullName: newFullName}
-
-	// ValidateToken içindeki GetUserByID çağrısını mock'la
 	mockValidatedUser := &pb.UserInfo{UserId: userID.String(), Email: userEmail, IsActive: true}
-	mockRepo.On("GetUserByID", mock.Anything, userID).Return(mockValidatedUser, nil).Once() // İlk GetUserByID (ValidateToken'dan)
-
-	// userRepo.UpdateUserFullName çağrısını mock'la
+	mockRepo.On("GetUserByID", mock.Anything, userID).Return(mockValidatedUser, nil).Once()
 	mockRepo.On("UpdateUserFullName", mock.Anything, userID, newFullName).Return(nil).Once()
-
-	// Güncellenmiş kullanıcıyı almak için ikinci GetUserByID çağrısını mock'la
-	mockUpdatedUserInfo := &pb.UserInfo{
-		UserId:        userID.String(),
-		Email:         userEmail,
-		FullName:      newFullName, // Güncellenmiş isim
-		Roles:         []string{"passenger"},
-		IsActive:      true,
-		EmailVerified: false, // Bu RPC e-posta durumunu değiştirmez
-	}
-	mockRepo.On("GetUserByID", mock.Anything, userID).Return(mockUpdatedUserInfo, nil).Once() // İkinci GetUserByID (güncel veriyi çekmek için)
-
+	mockUpdatedUserInfo := &pb.UserInfo{ UserId: userID.String(), Email: userEmail, FullName: newFullName, Roles: []string{"passenger"}, IsActive: true, EmailVerified: false,	}
+	mockRepo.On("GetUserByID", mock.Anything, userID).Return(mockUpdatedUserInfo, nil).Once()
 	res, err := authService.UpdateUserMetadata(context.Background(), req)
-
-	require.NoError(t, err)
-	require.NotNil(t, res)
-	require.NotNil(t, res.User)
-	assert.Equal(t, userID.String(), res.User.UserId)
-	assert.Equal(t, newFullName, res.User.FullName)
-
+	require.NoError(t, err); require.NotNil(t, res); require.NotNil(t, res.User); assert.Equal(t, userID.String(), res.User.UserId); assert.Equal(t, newFullName, res.User.FullName)
 	mockRepo.AssertExpectations(t)
 }
 
 func TestAuthServiceServer_UpdateUserMetadata_InvalidAccessToken(t *testing.T) {
-	mockRepo := new(MockUserRepository) // ValidateToken hata döneceği için repo çağrıları olmayacak
-	testJWTSecret := "test_secret_update_metadata_invalid_token"
-	authService := NewAuthServiceServer(mockRepo, testJWTSecret)
-
+	mockRepo := new(MockUserRepository)
+	testJWTSecret := "test_secret_update_metadata_invalid_token_v2"
+	rlConfig := newTestRateLimiterConfig()
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret, rlConfig) // GÜNCELLENDİ
 	req := &pb.UpdateUserMetadataRequest{AccessToken: "invalid-or-expired-token", FullName: "Any Name"}
-
-	// ValidateToken zaten Unauthenticated dönecek, ekstra mock'a gerek yok
-	// (çünkü ValidateToken içindeki GetUserByID çağrısı yapılmadan token parse hatası alır)
-
 	res, err := authService.UpdateUserMetadata(context.Background(), req)
-
-	assert.Error(t, err)
-	assert.Nil(t, res)
-	st, ok := status.FromError(err)
-	require.True(t, ok)
-	assert.Equal(t, codes.Unauthenticated, st.Code())
-	// mockRepo.AssertExpectations(t) // Hiçbir repo metodu çağrılmadığı için bu gerekli değil
+	assert.Error(t, err); assert.Nil(t, res); st, ok := status.FromError(err); require.True(t, ok); assert.Equal(t, codes.Unauthenticated, st.Code())
 }
+
+// hashToken yardımcı fonksiyonu (eğer servis paketinden import edilmiyorsa testlerde gerekebilir)
+// func hashToken(token string) string {
+// 	hasher := sha256.New()
+// 	hasher.Write([]byte(token))
+// 	return hex.EncodeToString(hasher.Sum(nil))
+// }

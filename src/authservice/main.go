@@ -3,29 +3,38 @@ package main
 import (
 	"context"
 	"fmt"
-	"log/slog" // log/slog import edildi
+	"log/slog"
 	"net"
 	"os"
+	"strconv" // getEnvInt için eklendi
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
-	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/status" // loggingInterceptor için
 
-	"github.com/voyalis/voyago-base/src/authservice/db"          // DB paketi
-	pb "github.com/voyalis/voyago-base/src/authservice/genproto" // Proto importu
-	"github.com/voyalis/voyago-base/src/authservice/repository"  // Repository paketimiz
-	"github.com/voyalis/voyago-base/src/authservice/service"     // Servis paketimiz
+	"github.com/voyalis/voyago-base/src/authservice/db"
+	pb "github.com/voyalis/voyago-base/src/authservice/genproto"
+	"github.com/voyalis/voyago-base/src/authservice/interceptor" // YENİ: Rate Limiter interceptor'ı için
+	"github.com/voyalis/voyago-base/src/authservice/repository"
+	"github.com/voyalis/voyago-base/src/authservice/service"
+	"golang.org/x/time/rate" // YENİ: Rate Limiter için
 )
 
 const (
-	portEnvVar    = "AUTH_SERVICE_PORT"
-	defaultPort   = "50051"
-	serviceName   = "AuthService" // Health check ve loglar için
-	jwtSecretEnv  = "JWT_SECRET_KEY"
-	defaultJWTKey = "default_dev_secret_please_change_in_production_for_voyago_auth_123!"
+	portEnvVar            = "AUTH_SERVICE_PORT"
+	defaultPort           = "50051"
+	serviceName           = "AuthService"
+	jwtSecretEnv          = "JWT_SECRET_KEY"
+	defaultJWTKey         = "default_dev_secret_please_change_in_production_for_voyago_auth_123!"
+	rateLimitRPSEnv       = "RATE_LIMIT_RPS"       // Saniyede istek limiti için ortam değişkeni
+	defaultRateLimitRPS   = 5                      // Varsayılan saniyede istek limiti
+	rateLimitBurstEnv     = "RATE_LIMIT_BURST"     // Anlık patlama kapasitesi için ortam değişkeni
+	defaultRateLimitBurst = 10                     // Varsayılan anlık patlama kapasitesi
+	cleanupIntervalEnv    = "RATE_LIMIT_CLEANUP_MINUTES" // Temizleme aralığı için ortam değişkeni
+	defaultCleanupMinutes = 10                         // Varsayılan temizleme aralığı (dakika)
 )
 
 func getEnv(key, fallback string) string {
@@ -36,25 +45,27 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+func getEnvInt(key string, fallback int) int {
+	if valueStr, exists := os.LookupEnv(key); exists {
+		if value, err := strconv.Atoi(valueStr); err == nil {
+			return value
+		}
+		slog.Warn("Failed to parse integer environment variable, using fallback.", "key", key, "value_str", valueStr, "fallback", fallback)
+	}
+	return fallback
+}
+
 func isUsingDefaultJWTKey() bool {
 	return getEnv(jwtSecretEnv, defaultJWTKey) == defaultJWTKey
 }
 
 func main() {
-	// Logger yapılandırması
 	logLevel := new(slog.LevelVar)
-	logLevel.Set(slog.LevelInfo) // Varsayılan Info, LOG_LEVEL=DEBUG ile değiştirilebilir
-
+	logLevel.Set(slog.LevelInfo)
 	if os.Getenv("LOG_LEVEL") == "DEBUG" {
 		logLevel.Set(slog.LevelDebug)
 	}
-
-	handlerOptions := &slog.HandlerOptions{
-		Level:     logLevel,
-		AddSource: true, // Log mesajına kaynak dosya:satır bilgisini ekler
-	}
-	// JSONHandler yerine TextHandler da kullanılabilir (geliştirme için daha okunaklı olabilir)
-	// handler := slog.NewTextHandler(os.Stdout, handlerOptions) 
+	handlerOptions := &slog.HandlerOptions{Level: logLevel, AddSource: true}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, handlerOptions))
 	slog.SetDefault(logger)
 
@@ -66,25 +77,29 @@ func main() {
 		"using_default_jwt_key", isUsingDefaultJWTKey(),
 	)
 
-	// 1. Veritabanı bağlantısını başlat
-	// db/db.go dosyasındaki InitDB() fonksiyonu db.DB global değişkenini set etmeli.
-	db.InitDB() 
-	// defer db.DB.Close() // Uzun süreli servislerde main sonunda defer etkili olmaz.
-
-	// 2. Repository ve Service katmanlarını oluştur (Dependency Injection)
-	// repository/user_repository.go dosyasındaki NewUserRepo, repository.UserRepoInterface dönmeli.
-	userRepo := repository.NewUserRepo(db.DB) 
-	
+	db.InitDB()
+	userRepo := repository.NewUserRepo(db.DB)
 	jwtSecret := getEnv(jwtSecretEnv, defaultJWTKey)
-	if jwtSecret == defaultJWTKey { // Bu kontrol zaten isUsingDefaultJWTKey içinde yapılıyor ama burada da log basabiliriz.
+	if jwtSecret == defaultJWTKey {
 		slog.Warn("SECURITY WARNING: Using default JWT_SECRET_KEY. This is INSECURE and for development only. Set a strong JWT_SECRET_KEY environment variable for production.")
 	}
 
-	// service/auth_service.go dosyasındaki NewAuthServiceServer, 
-	// service.UserRepository (ki bu repository.UserRepoInterface ile aynı olmalı) ve string (secretKey) almalı.
-	authSvcServer := service.NewAuthServiceServer(userRepo, jwtSecret)
+	// Rate Limiter Yapılandırması
+	rlConfig := interceptor.RateLimiterConfig{
+		RequestsPerSecond: rate.Limit(getEnvInt(rateLimitRPSEnv, defaultRateLimitRPS)),
+		Burst:             getEnvInt(rateLimitBurstEnv, defaultRateLimitBurst),
+		CleanupInterval:   time.Duration(getEnvInt(cleanupIntervalEnv, defaultCleanupMinutes)) * time.Minute,
+		ProtectedMethods: map[string]bool{
+			"/authservice.AuthService/Login":                true,
+			"/authservice.AuthService/RequestPasswordReset": true,
+			// İsteğe bağlı olarak diğer metotlar eklenebilir:
+			// "/authservice.AuthService/Register": true,
+			// "/authservice.AuthService/RequestEmailVerification": true,
+		},
+	}
+	// NewAuthServiceServer'a rlConfig parametresini iletiyoruz
+	authSvcServer := service.NewAuthServiceServer(userRepo, jwtSecret, rlConfig)
 
-	// 3. gRPC sunucusunu yapılandır
 	port := getEnv(portEnvVar, defaultPort)
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", port))
 	if err != nil {
@@ -93,36 +108,34 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer(
-		grpc.UnaryInterceptor(loggingInterceptor), // Logging interceptor'ını ekliyoruz
+		grpc.ChainUnaryInterceptor( // Birden fazla interceptor için ChainUnaryInterceptor
+			loggingInterceptor,                     // Mevcut logging interceptor'ımız
+			authSvcServer.RateLimitInterceptor(), // YENİ: Rate limiting interceptor
+		),
 	)
 
-	// 4. Servisleri gRPC sunucusuna kaydet
-	pb.RegisterAuthServiceServer(grpcServer, authSvcServer) // Proto'dan gelen register fonksiyonu
-	registerHealthCheck(grpcServer)                        // Health check servisini kaydet
-	reflection.Register(grpcServer)                        // gRPC reflection'ı kaydet
+	pb.RegisterAuthServiceServer(grpcServer, authSvcServer)
+	registerHealthCheck(grpcServer)
+	reflection.Register(grpcServer)
 
-	slog.Info("AuthService is listening", "port", port)
-	slog.Info("gRPC server started successfully.")
-
-	// Sunucuyu başlat
+	slog.Info("AuthService is listening with Rate Limiting enabled", "port", port,
+		"rate_limit_rps", rlConfig.RequestsPerSecond,
+		"burst", rlConfig.Burst,
+		"protected_methods_count", len(rlConfig.ProtectedMethods),
+	)
 	if err := grpcServer.Serve(lis); err != nil {
 		slog.Error("Failed to serve gRPC server", "error", err)
 		os.Exit(1)
 	}
 }
 
-// registerHealthCheck gRPC health check servisini kaydeder.
 func registerHealthCheck(s *grpc.Server) {
 	healthSrv := health.NewServer()
-	// Başlangıçta genel durumu SERVING yapalım.
-	// Daha karmaşık senaryolarda, bağımlılıklar (DB gibi) kontrol edildikten sonra
-	// spesifik servisler için durum (örn: "AuthService") ayarlanabilir.
-	healthSrv.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING) // Tüm servisler için genel durum
+	healthSrv.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 	grpc_health_v1.RegisterHealthServer(s, healthSrv)
 	slog.Info("Successfully registered gRPC health check service.")
 }
 
-// loggingInterceptor her gRPC çağrısı için temel loglama yapar.
 func loggingInterceptor(
 	ctx context.Context,
 	req interface{},
@@ -130,27 +143,22 @@ func loggingInterceptor(
 	handler grpc.UnaryHandler,
 ) (interface{}, error) {
 	startTime := time.Now()
-	// İstek payload'ını loglamak güvenlik riski oluşturabilir, bu yüzden sadece metod adını logluyoruz.
-	// Gerekirse DEBUG seviyesinde ve hassas veriler maskelenerek payload loglanabilir.
 	slog.InfoContext(ctx, "gRPC Request Started", "method", info.FullMethod)
 
-	resp, err := handler(ctx, req) // Asıl RPC metodunu çağır
+	resp, err := handler(ctx, req)
 
 	duration := time.Since(startTime)
+	logFields := []interface{}{
+		"method", info.FullMethod,
+		"duration", duration.String(),
+	}
+
 	if err != nil {
-		// gRPC hataları genellikle status.Status tipindedir, buradan daha fazla detay alabiliriz.
 		st, _ := status.FromError(err)
-		slog.ErrorContext(ctx, "gRPC Request Finished with error",
-			"method", info.FullMethod,
-			"duration", duration.String(),
-			"grpc_code", st.Code().String(), // gRPC hata kodunu logla
-			"error", err.Error(),           // Hatanın string mesajı
-		)
+		logFields = append(logFields, "grpc_code", st.Code().String(), "error", err.Error())
+		slog.ErrorContext(ctx, "gRPC Request Finished with error", logFields...)
 	} else {
-		slog.InfoContext(ctx, "gRPC Request Finished successfully",
-			"method", info.FullMethod,
-			"duration", duration.String(),
-		)
+		slog.InfoContext(ctx, "gRPC Request Finished successfully", logFields...)
 	}
 	return resp, err
 }
