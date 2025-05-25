@@ -350,4 +350,81 @@ func TestAuthServiceServer_ConfirmEmailVerification_InvalidToken(t *testing.T) {
 	mockRepo.AssertExpectations(t)
 }
 
-// TODO: ChangePassword ve UpdateUserMetadata RPC'leri için unit testler.
+// --- ChangePassword RPC'si İçin Unit Testler ---
+
+func TestAuthServiceServer_ChangePassword_Success(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	testJWTSecret := "test_secret_for_change_password"
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+
+	userID := uuid.New()
+	userEmail := "changepass.user@example.com"
+	oldPassword := "OldSecurePassword123!"
+	newPassword := "NewSecurePassword456$"
+
+	// Geçerli bir access token oluşturalım
+	accessClaims := jwt.MapClaims{
+		"sub":   userID.String(), "email": userEmail, "roles": []string{"passenger"},
+		"exp":   time.Now().Add(time.Hour).Unix(), "iat":   time.Now().Unix(), "jti":   uuid.NewString(),
+	}
+	accessTokenJwt := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
+	signedAccessToken, _ := accessTokenJwt.SignedString([]byte(testJWTSecret))
+
+	req := &pb.ChangePasswordRequest{
+		AccessToken: signedAccessToken,
+		OldPassword: oldPassword,
+		NewPassword: newPassword,
+	}
+
+	// ValidateToken içindeki GetUserByID çağrısını mock'la
+	mockValidatedUser := &pb.UserInfo{UserId: userID.String(), Email: userEmail, IsActive: true}
+	mockRepo.On("GetUserByID", mock.Anything, userID).Return(mockValidatedUser, nil).Once()
+
+	// GetUserByEmail çağrısını mock'la (eski şifre hash'ini almak için)
+	hashedOldPassword, _ := bcrypt.GenerateFromPassword([]byte(oldPassword), bcrypt.DefaultCost)
+	mockRepo.On("GetUserByEmail", mock.Anything, userEmail).Return(mockValidatedUser, string(hashedOldPassword), true, nil).Once()
+
+	// UpdateUserPassword çağrısını mock'la
+	mockRepo.On("UpdateUserPassword", mock.Anything, userID, mock.AnythingOfType("string")).Return(nil).Once()
+
+	// RevokeAllRefreshTokensForUser çağrısını mock'la
+	mockRepo.On("RevokeAllRefreshTokensForUser", mock.Anything, userID).Return(nil).Once()
+
+	res, err := authService.ChangePassword(context.Background(), req)
+
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.Equal(t, "Password changed successfully.", res.Message)
+
+	mockRepo.AssertExpectations(t)
+}
+
+func TestAuthServiceServer_ChangePassword_IncorrectOldPassword(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	testJWTSecret := "test_secret_change_pass_wrong_old"
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+
+	userID := uuid.New(); userEmail := "wrongoldpass@example.com"
+	accessClaims := jwt.MapClaims{"sub": userID.String(), "email": userEmail, "exp": time.Now().Add(time.Hour).Unix(), "jti": uuid.NewString()}
+	accessTokenJwt := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims);	signedAccessToken, _ := accessTokenJwt.SignedString([]byte(testJWTSecret))
+
+	req := &pb.ChangePasswordRequest{AccessToken: signedAccessToken, OldPassword: "wrong_old_password", NewPassword: "NewPassword123!"}
+
+	mockValidatedUser := &pb.UserInfo{UserId: userID.String(), Email: userEmail, IsActive: true}
+	mockRepo.On("GetUserByID", mock.Anything, userID).Return(mockValidatedUser, nil).Once() // ValidateToken için
+
+	correctOldPasswordHash, _ := bcrypt.GenerateFromPassword([]byte("correct_old_password"), bcrypt.DefaultCost)
+	mockRepo.On("GetUserByEmail", mock.Anything, userEmail).Return(mockValidatedUser, string(correctOldPasswordHash), true, nil).Once() // Eski şifre kontrolü için
+
+	res, err := authService.ChangePassword(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, res)
+	st, ok := status.FromError(err); require.True(t, ok)
+	assert.Equal(t, codes.Unauthenticated, st.Code())
+	assert.Contains(t, st.Message(), "Incorrect old password")
+
+	mockRepo.AssertExpectations(t)
+}
+
+// TODO: ChangePassword için diğer hata senaryoları (geçersiz access token, yeni şifre çok kısa, kullanıcı aktif değil vb.)

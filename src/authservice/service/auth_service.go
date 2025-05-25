@@ -422,31 +422,55 @@ func (s *AuthServiceServer) ConfirmPasswordReset(ctx context.Context, req *pb.Co
 }
 
 
-// Diğer RPC'ler için Unimplemented stub'ları (slog eklendi)
 func (s *AuthServiceServer) ChangePassword(ctx context.Context, req *pb.ChangePasswordRequest) (*pb.ChangePasswordResponse, error) {
 	slog.InfoContext(ctx, "Service: ChangePassword request received")
-	if req.AccessToken == "" || req.OldPassword == "" || len(req.NewPassword) < 8 {
-		slog.WarnContext(ctx, "Service: ChangePassword failed - missing required fields or new password too short")
-		return nil, status.Errorf(codes.InvalidArgument, "Access token, old password, and new password (min 8 chars) are required")
+
+	if req.AccessToken == "" {
+		slog.WarnContext(ctx, "Service: ChangePassword failed - access token is required")
+		return nil, status.Errorf(codes.InvalidArgument, "Access token is required")
+	}
+	if req.OldPassword == "" {
+		slog.WarnContext(ctx, "Service: ChangePassword failed - old password is required")
+		return nil, status.Errorf(codes.InvalidArgument, "Old password is required")
+	}
+	if len(req.NewPassword) < 8 {
+		slog.WarnContext(ctx, "Service: ChangePassword failed - new password is too short")
+		return nil, status.Errorf(codes.InvalidArgument, "New password must be at least 8 characters long")
+	}
+	if req.OldPassword == req.NewPassword {
+		slog.WarnContext(ctx, "Service: ChangePassword failed - new password cannot be the same as the old password")
+		return nil, status.Errorf(codes.InvalidArgument, "New password cannot be the same as the old password")
 	}
 
-	// 1. Access Token'ı doğrula
+	// 1. Access Token'ı doğrula ve kullanıcı bilgilerini al
 	validateRes, err := s.ValidateToken(ctx, &pb.ValidateTokenRequest{Token: req.AccessToken})
 	if err != nil {
 		slog.WarnContext(ctx, "Service: ChangePassword failed - invalid access token", "error", err)
-		return nil, err // ValidateToken zaten uygun gRPC hatasını döner
+		// ValidateToken zaten uygun gRPC hatasını döneceği için direkt onu dönebiliriz.
+		// Ancak, Unauthenticated yerine belki daha spesifik bir PermissionDenied dönebiliriz
+		// ya da ValidateToken'dan gelen hatayı olduğu gibi geçebiliriz.
+		// Şimdilik ValidateToken'ın hatasını geçelim.
+		return nil, err
 	}
-	userInfo := validateRes.User
-	userID, _ := uuid.Parse(userInfo.UserId)
+	userInfo := validateRes.User // *pb.UserInfo
+	if userInfo == nil { // Ekstra bir kontrol, ValidateToken başarılıysa bu olmamalı ama...
+		slog.ErrorContext(ctx, "Service: ChangePassword - UserInfo is nil after successful token validation, this should not happen")
+		return nil, status.Errorf(codes.Internal, "Failed to retrieve user information")
+	}
+	userID, errParse := uuid.Parse(userInfo.UserId)
+	if errParse != nil {
+		slog.ErrorContext(ctx, "Service: ChangePassword - Failed to parse UserID from validated token", "userID_str", userInfo.UserId, "error", errParse.Error())
+		return nil, status.Errorf(codes.Internal, "Internal server error processing user ID")
+	}
 
-	// 2. Veritabanından kullanıcının mevcut şifre hash'ini al (GetUserByEmail üzerinden)
-	// Bu RPC, passwordHash'i de dönüyor.
+	// 2. Veritabanından kullanıcının mevcut şifre hash'ini al
+	// GetUserByEmail, passwordHash'i de dönüyor.
 	_, storedPasswordHash, isActive, err := s.userRepo.GetUserByEmail(ctx, userInfo.Email)
 	if err != nil {
 		slog.ErrorContext(ctx, "Service: ChangePassword failed - could not fetch user for old password check", "userID", userID.String(), "error", err.Error())
 		return nil, status.Errorf(codes.Internal, "Failed to process your request")
 	}
-	if !isActive { // Bu kontrol ValidateToken içinde de var ama yine de yapalım
+	if !isActive {
 		slog.WarnContext(ctx, "Service: ChangePassword failed - user account disabled", "userID", userID.String())
 		return nil, status.Errorf(codes.PermissionDenied, "User account is disabled")
 	}
@@ -454,7 +478,7 @@ func (s *AuthServiceServer) ChangePassword(ctx context.Context, req *pb.ChangePa
 	// 3. Eski şifreyi doğrula
 	if !checkPasswordHash(req.OldPassword, storedPasswordHash) {
 		slog.WarnContext(ctx, "Service: ChangePassword failed - incorrect old password", "userID", userID.String())
-		return nil, status.Errorf(codes.Unauthenticated, "Incorrect old password")
+		return nil, status.Errorf(codes.Unauthenticated, "Incorrect old password") // veya codes.InvalidArgument
 	}
 
 	// 4. Yeni şifreyi hash'le
@@ -470,13 +494,16 @@ func (s *AuthServiceServer) ChangePassword(ctx context.Context, req *pb.ChangePa
 		return nil, status.Errorf(codes.Internal, "Failed to update password")
 	}
 
-	// 6. Şifre değiştiği için kullanıcının diğer tüm aktif oturumlarını (refresh token'larını) sonlandır
+	// 6. (ÖNEMLİ GÜVENLİK ADIMI) Şifre değiştiği için kullanıcının diğer tüm aktif oturumlarını (refresh token'larını) sonlandır
 	if err := s.userRepo.RevokeAllRefreshTokensForUser(ctx, userID); err != nil {
-		slog.WarnContext(ctx, "Service: ChangePassword - failed to revoke all refresh tokens", "userID", userID.String(), "error", err.Error())
+		// Bu kritik bir hata değil, şifre güncellendi. Sadece loglayalım.
+		slog.WarnContext(ctx, "Service: ChangePassword - failed to revoke all refresh tokens for user, but password was updated", "userID", userID.String(), "error", err.Error())
 	}
 
 	slog.InfoContext(ctx, "Service: Password changed successfully by user", "userID", userID.String())
-	return &pb.ChangePasswordResponse{Message: "Password changed successfully."}, nil
+	return &pb.ChangePasswordResponse{
+		Message: "Password changed successfully.",
+	}, nil
 }
 
 // src/authservice/service/auth_service.go
