@@ -48,6 +48,7 @@ type UserRepository interface {
 	GetValidEmailVerificationTokenByHash(ctx context.Context, tokenHash string) (*repository.EmailVerificationToken, error) // repository.EmailVerificationToken DÖNÜYOR
 	MarkEmailVerificationTokenAsUsed(ctx context.Context, tokenHash string) error
 	MarkUserEmailAsVerified(ctx context.Context, userID uuid.UUID) error
+	UpdateUserFullName(ctx context.Context, userID uuid.UUID, newFullName string) error
 }
 
 type AuthServiceServer struct {
@@ -618,7 +619,50 @@ func (s *AuthServiceServer) ConfirmEmailVerification(ctx context.Context, req *p
 	}, nil
 }
 func (s *AuthServiceServer) UpdateUserMetadata(ctx context.Context, req *pb.UpdateUserMetadataRequest) (*pb.UpdateUserMetadataResponse, error) {
-	slog.WarnContext(ctx, "RPC method not implemented", "method", "UpdateUserMetadata")
-	// TODO: Access token'ı doğrulama, full_name'i güncelleme, (ileride) user_metadata JSONB alanını güncelleme
-	return nil, status.Errorf(codes.Unimplemented, "method UpdateUserMetadata not implemented")
+	slog.InfoContext(ctx, "Service: UpdateUserMetadata request received", "access_token_present", req.AccessToken != "", "full_name_to_update", req.FullName)
+
+	if req.AccessToken == "" {
+		slog.WarnContext(ctx, "Service: UpdateUserMetadata failed - access token is required")
+		return nil, status.Errorf(codes.InvalidArgument, "Access token is required")
+	}
+	// FullName boş olabilir (kullanıcı adını silmek isteyebilir), bu yüzden zorunlu değil.
+	// Ancak, API tasarımına göre boş stringe izin vermeyebiliriz de. Şimdilik izin verelim.
+	// if req.FullName == "" { 
+	// 	slog.WarnContext(ctx, "Service: UpdateUserMetadata failed - full name is required")
+	// 	return nil, status.Errorf(codes.InvalidArgument, "Full name is required")
+	// }
+
+	// 1. Access Token'ı doğrula ve kullanıcı bilgilerini al
+	validateRes, err := s.ValidateToken(ctx, &pb.ValidateTokenRequest{Token: req.AccessToken})
+	if err != nil {
+		slog.WarnContext(ctx, "Service: UpdateUserMetadata failed - invalid access token", "error", err)
+		return nil, err // ValidateToken zaten uygun gRPC hatasını döner
+	}
+	userInfo := validateRes.User
+	if userInfo == nil {
+		slog.ErrorContext(ctx, "Service: UpdateUserMetadata - UserInfo is nil after successful token validation")
+		return nil, status.Errorf(codes.Internal, "Failed to retrieve user information from token")
+	}
+	parsedUserID, errParse := uuid.Parse(userInfo.UserId)
+	if errParse != nil {
+		slog.ErrorContext(ctx, "Service: UpdateUserMetadata - Failed to parse UserID from validated token", "userID_str", userInfo.UserId, "error", errParse.Error())
+		return nil, status.Errorf(codes.Internal, "Internal server error processing user ID")
+	}
+
+	// 2. Repository üzerinden full_name'i güncelle
+	// Repository'deki UpdateUserFullName, fullName boşsa DB'ye NULL yazar.
+	if err := s.userRepo.UpdateUserFullName(ctx, parsedUserID, req.FullName); err != nil {
+		slog.ErrorContext(ctx, "Service: UpdateUserMetadata failed - error updating user full_name in repository", "userID", parsedUserID.String(), "error", err.Error())
+		return nil, status.Errorf(codes.Internal, "Failed to update user metadata")
+	}
+
+	// 3. Güncel kullanıcı bilgilerini alıp dön
+	updatedUserInfo, err := s.userRepo.GetUserByID(ctx, parsedUserID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Service: UpdateUserMetadata - user metadata updated but failed to retrieve updated user data", "userID", parsedUserID.String(), "error", err.Error())
+		return nil, status.Errorf(codes.Internal, "User metadata updated, but failed to retrieve complete user data")
+	}
+
+	slog.InfoContext(ctx, "Service: User metadata updated successfully", "userID", userInfo.UserId, "new_full_name", req.FullName)
+	return &pb.UpdateUserMetadataResponse{User: updatedUserInfo}, nil
 }

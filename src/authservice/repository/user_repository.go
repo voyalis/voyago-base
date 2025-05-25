@@ -75,7 +75,7 @@ type UserRepoInterface interface {
 	GetValidEmailVerificationTokenByHash(ctx context.Context, tokenHash string) (*EmailVerificationToken, error)
 	MarkEmailVerificationTokenAsUsed(ctx context.Context, tokenHash string) error
 	MarkUserEmailAsVerified(ctx context.Context, userID uuid.UUID) error
-	
+	UpdateUserFullName(ctx context.Context, userID uuid.UUID, newFullName string) error
 }
 
 type UserRepo struct {
@@ -370,6 +370,42 @@ func (r *UserRepo) MarkUserEmailAsVerified(ctx context.Context, userID uuid.UUID
 	} else {
 		slog.InfoContext(ctx, "Repository: User email marked as verified", "userID", userID.String())
 	}
+	return nil
+}
+
+func (r *UserRepo) UpdateUserFullName(ctx context.Context, userID uuid.UUID, newFullName string) error {
+	query := `UPDATE auth.users SET full_name = $1, updated_at = NOW() WHERE id = $2`
+	
+	var sqlFullName sql.NullString
+	if newFullName != "" {
+		sqlFullName = sql.NullString{String: newFullName, Valid: true}
+	} else {
+		// Eğer boş string gelirse, DB'de NULL olarak saklamak isteyebiliriz.
+		// Veya boş string'e izin vermeyip servis katmanında kontrol edebiliriz.
+		// Şimdilik boş string'i NULL olarak kabul edelim.
+		sqlFullName = sql.NullString{Valid: false} 
+	}
+
+	result, err := r.db.ExecContext(ctx, query, sqlFullName, userID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Repository: Error updating user full_name", "userID", userID.String(), "error", err)
+		return fmt.Errorf("could not update user full_name: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		slog.WarnContext(ctx, "Repository: Could not get rows affected after updating full_name", "userID", userID.String(), "error", err)
+		// Hata dönebiliriz veya sadece loglayabiliriz. Şimdilik loglayalım.
+	} else if rowsAffected == 0 {
+		slog.WarnContext(ctx, "Repository: No user found to update full_name or full_name was already the same", "userID", userID.String(), "new_full_name", newFullName)
+		// Bu durum, kullanıcının var olmadığını veya ismin zaten aynı olduğunu gösterebilir.
+		// Bir hata dönmek yerine (çünkü işlem teknik olarak başarısız değil),
+		// servis katmanının bunu nasıl ele alacağına karar vermesini sağlayabiliriz.
+		// Veya spesifik bir "kullanıcı bulunamadı" hatası dönebiliriz.
+		// Şimdilik hata dönmeyelim, servis katmanı zaten GetUserByID ile kullanıcıyı çekecek.
+	}
+
+	slog.InfoContext(ctx, "Repository: User full_name updated", "userID", userID.String(), "new_full_name", newFullName)
 	return nil
 }
 

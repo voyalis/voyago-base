@@ -194,3 +194,62 @@ func TestAuthService_EmailVerificationRequestE2E(t *testing.T) {
 	assert.True(t, reqEmailVerifRes.ExpiresInSeconds > 0)
 	t.Logf("E2E_INFO (EmailVerificationRequestE2E): Email verification requested for %s. Response message: %s", userEmailForVerification, reqEmailVerifRes.Message)
 }
+
+// TestAuthService_UpdateUserMetadataE2E, kullanıcının profil bilgilerini (full_name) güncelleme akışını test eder.
+func TestAuthService_UpdateUserMetadataE2E(t *testing.T) {
+	require.NotNil(t, testAuthClient, "gRPC client must be initialized in TestMain")
+
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+	defer cancel()
+
+	// 1. Test için yeni bir kullanıcı oluştur
+	userEmailForMetadata := fmt.Sprintf("e2e-metadata-%s@voyago.com", uuid.NewString()[:8])
+	password := "MetadataE2E123$"
+	initialFullName := "Initial E2E Name " + uuid.NewString()[:4]
+
+	regReq := &pb.RegisterRequest{Email: userEmailForMetadata, Password: password, FullName: initialFullName}
+	regRes, err := testAuthClient.Register(ctx, regReq)
+	require.NoError(t, err, "UpdateUserMetadataE2E: Register RPC failed")
+	require.NotNil(t, regRes); require.NotNil(t, regRes.User)
+	registeredUserID := regRes.User.UserId
+	t.Logf("E2E_INFO (UpdateUserMetadataE2E): User registered: %s, UserID: %s, Initial FullName: %s", userEmailForMetadata, registeredUserID, initialFullName)
+
+	// 2. Login ol ve access token al
+	loginReq := &pb.LoginRequest{Email: userEmailForMetadata, Password: password}
+	loginRes, err := testAuthClient.Login(ctx, loginReq)
+	require.NoError(t, err, "UpdateUserMetadataE2E: Login RPC failed")
+	require.NotNil(t, loginRes); require.NotEmpty(t, loginRes.AccessToken)
+	t.Logf("E2E_INFO (UpdateUserMetadataE2E): Logged in for %s. AccessToken acquired.", userEmailForMetadata)
+
+	// 3. UpdateUserMetadata RPC'sini çağırarak full_name'i güncelle
+	newFullName := "Updated E2E FullName " + uuid.NewString()[:4]
+	updateReq := &pb.UpdateUserMetadataRequest{
+		AccessToken: loginRes.AccessToken,
+		FullName:    newFullName,
+	}
+	updateRes, err := testAuthClient.UpdateUserMetadata(ctx, updateReq)
+	require.NoError(t, err, "UpdateUserMetadata RPC failed")
+	require.NotNil(t, updateRes); require.NotNil(t, updateRes.User)
+	assert.Equal(t, registeredUserID, updateRes.User.UserId)
+	assert.Equal(t, newFullName, updateRes.User.FullName, "FullName in UpdateUserMetadataResponse should be the new name")
+	assert.True(t, updateRes.User.EmailVerified == regRes.User.EmailVerified, "EmailVerified status should not change") // E-posta doğrulama durumu değişmemeli
+	t.Logf("E2E_INFO (UpdateUserMetadataE2E): User metadata updated for UserID: %s. New FullName: %s", registeredUserID, updateRes.User.FullName)
+
+	// 4. Güncellemenin kalıcı olduğunu doğrulamak için tekrar ValidateToken veya Login ile kontrol et
+	// Yeni bir ValidateToken çağrısı yapalım
+	validateReq := &pb.ValidateTokenRequest{Token: loginRes.AccessToken} // Aynı access token hala geçerli olmalı
+	validateRes, err := testAuthClient.ValidateToken(ctx, validateReq)
+	require.NoError(t, err, "ValidateToken RPC failed after metadata update")
+	require.NotNil(t, validateRes); require.NotNil(t, validateRes.User)
+	assert.Equal(t, registeredUserID, validateRes.User.UserId)
+	assert.Equal(t, newFullName, validateRes.User.FullName, "FullName in validated token info should be the new name")
+	t.Logf("E2E_INFO (UpdateUserMetadataE2E): Validated token after metadata update, FullName is correct: %s", validateRes.User.FullName)
+
+	// Alternatif: Yeni bir login ile de kontrol edilebilir (yeni bir access token alınır)
+	// loginAgainReq := &pb.LoginRequest{Email: userEmailForMetadata, Password: password}
+	// loginAgainRes, errLoginAgain := testAuthClient.Login(ctx, loginAgainReq)
+	// require.NoError(t, errLoginAgain, "Login again RPC failed after metadata update")
+	// require.NotNil(t, loginAgainRes); require.NotNil(t, loginAgainRes.User)
+	// assert.Equal(t, newFullName, loginAgainRes.User.FullName, "FullName in new login response should be the new name")
+	// t.Logf("E2E_INFO (UpdateUserMetadataE2E): Logged in again, FullName is correct: %s", loginAgainRes.User.FullName)
+}

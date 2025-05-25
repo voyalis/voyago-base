@@ -324,3 +324,62 @@ func TestUserRepo_MarkUserEmailAsVerified_AlreadyVerified(t *testing.T) {
 	assert.NoError(t, err) // Hata dönmemeli, sadece loglamalı
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+// --- UpdateUserFullName Metodu İçin Testler ---
+func TestUserRepo_UpdateUserFullName_Success(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	userID := uuid.New()
+	newName := "Updated Test User Name"
+	
+	// sql.NullString ile eşleştirme
+	expectedSQLFullName := sql.NullString{String: newName, Valid: true}
+
+	query := regexp.QuoteMeta(`UPDATE auth.users SET full_name = $1, updated_at = NOW() WHERE id = $2`)
+	mock.ExpectExec(query).
+		WithArgs(expectedSQLFullName, userID). // Argümanı sql.NullString olarak bekliyoruz
+		WillReturnResult(sqlmock.NewResult(0, 1)) // Bir satır etkilendi
+
+	err := repo.UpdateUserFullName(context.Background(), userID, newName)
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUserRepo_UpdateUserFullName_EmptyNameSetsNull(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	userID := uuid.New()
+	emptyName := ""
+	
+	// Boş string geldiğinde sql.NullString{Valid: false} beklenir
+	expectedSQLNullFullName := sql.NullString{Valid: false} 
+
+	query := regexp.QuoteMeta(`UPDATE auth.users SET full_name = $1, updated_at = NOW() WHERE id = $2`)
+	mock.ExpectExec(query).
+		WithArgs(expectedSQLNullFullName, userID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := repo.UpdateUserFullName(context.Background(), userID, emptyName)
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUserRepo_UpdateUserFullName_UserNotFound(t *testing.T) {
+	db, mock, repo := newMockDBAndRepo(t)
+	defer db.Close()
+
+	userID := uuid.New() // Var olmayan bir kullanıcı ID'si
+	newName := "NonExistent User Update"
+	expectedSQLFullName := sql.NullString{String: newName, Valid: true}
+
+	query := regexp.QuoteMeta(`UPDATE auth.users SET full_name = $1, updated_at = NOW() WHERE id = $2`)
+	mock.ExpectExec(query).
+		WithArgs(expectedSQLFullName, userID).
+		WillReturnResult(sqlmock.NewResult(0, 0)) // Hiçbir satır etkilenmedi
+
+	err := repo.UpdateUserFullName(context.Background(), userID, newName)
+	assert.NoError(t, err) // Repository katmanı bu durumda hata dönmüyor, sadece logluyor
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

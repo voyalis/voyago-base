@@ -427,4 +427,79 @@ func TestAuthServiceServer_ChangePassword_IncorrectOldPassword(t *testing.T) {
 	mockRepo.AssertExpectations(t)
 }
 
-// TODO: ChangePassword için diğer hata senaryoları (geçersiz access token, yeni şifre çok kısa, kullanıcı aktif değil vb.)
+
+// --- YENİ MOCK METOT ---
+func (m *MockUserRepository) UpdateUserFullName(ctx context.Context, userID uuid.UUID, newFullName string) error {
+	args := m.Called(ctx, userID, newFullName)
+	return args.Error(0)
+}
+
+// --- UpdateUserMetadata RPC'si İçin Unit Testler ---
+
+func TestAuthServiceServer_UpdateUserMetadata_Success(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	testJWTSecret := "test_secret_update_metadata_success"
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+
+	userID := uuid.New()
+	userEmail := "metadata.update@example.com"
+	newFullName := "Updated User FullName"
+
+	// Geçerli bir access token oluşturalım
+	accessClaims := jwt.MapClaims{
+		"sub": userID.String(), "email": userEmail, "roles": []string{"passenger"},
+		"exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "jti": uuid.NewString(),
+	}
+	accessTokenJwt := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
+	signedAccessToken, _ := accessTokenJwt.SignedString([]byte(testJWTSecret))
+
+	req := &pb.UpdateUserMetadataRequest{AccessToken: signedAccessToken, FullName: newFullName}
+
+	// ValidateToken içindeki GetUserByID çağrısını mock'la
+	mockValidatedUser := &pb.UserInfo{UserId: userID.String(), Email: userEmail, IsActive: true}
+	mockRepo.On("GetUserByID", mock.Anything, userID).Return(mockValidatedUser, nil).Once() // İlk GetUserByID (ValidateToken'dan)
+
+	// userRepo.UpdateUserFullName çağrısını mock'la
+	mockRepo.On("UpdateUserFullName", mock.Anything, userID, newFullName).Return(nil).Once()
+
+	// Güncellenmiş kullanıcıyı almak için ikinci GetUserByID çağrısını mock'la
+	mockUpdatedUserInfo := &pb.UserInfo{
+		UserId:        userID.String(),
+		Email:         userEmail,
+		FullName:      newFullName, // Güncellenmiş isim
+		Roles:         []string{"passenger"},
+		IsActive:      true,
+		EmailVerified: false, // Bu RPC e-posta durumunu değiştirmez
+	}
+	mockRepo.On("GetUserByID", mock.Anything, userID).Return(mockUpdatedUserInfo, nil).Once() // İkinci GetUserByID (güncel veriyi çekmek için)
+
+	res, err := authService.UpdateUserMetadata(context.Background(), req)
+
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.NotNil(t, res.User)
+	assert.Equal(t, userID.String(), res.User.UserId)
+	assert.Equal(t, newFullName, res.User.FullName)
+
+	mockRepo.AssertExpectations(t)
+}
+
+func TestAuthServiceServer_UpdateUserMetadata_InvalidAccessToken(t *testing.T) {
+	mockRepo := new(MockUserRepository) // ValidateToken hata döneceği için repo çağrıları olmayacak
+	testJWTSecret := "test_secret_update_metadata_invalid_token"
+	authService := NewAuthServiceServer(mockRepo, testJWTSecret)
+
+	req := &pb.UpdateUserMetadataRequest{AccessToken: "invalid-or-expired-token", FullName: "Any Name"}
+
+	// ValidateToken zaten Unauthenticated dönecek, ekstra mock'a gerek yok
+	// (çünkü ValidateToken içindeki GetUserByID çağrısı yapılmadan token parse hatası alır)
+
+	res, err := authService.UpdateUserMetadata(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, res)
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unauthenticated, st.Code())
+	// mockRepo.AssertExpectations(t) // Hiçbir repo metodu çağrılmadığı için bu gerekli değil
+}
