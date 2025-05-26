@@ -1,8 +1,8 @@
-# voyago-base/skaffold.yaml
-apiVersion: skaffold/v2beta29 
+apiVersion: skaffold/v2beta29
 kind: Config
 metadata:
   name: voyago-base
+
 build:
   artifacts:
     - image: auth-service
@@ -14,14 +14,33 @@ build:
   local:
     useDockerCLI: true
     useBuildkit: true
+
 deploy:
   kubectl:
-    manifests:
-      - kubernetes-manifests/postgres-auth/configmap.yaml
-      - kubernetes-manifests/postgres-auth/secret.yaml
-      - kubernetes-manifests/auth-jwt-secret.yaml      # JWT Secret
-      - kubernetes-manifests/postgres-auth/pvc.yaml
-      - kubernetes-manifests/postgres-auth/deployment.yaml
-      - kubernetes-manifests/postgres-auth/service.yaml
-      - kubernetes-manifests/authservice.yaml             # AuthService
+    manifests: []    # Defaultta hiçbir şey deploy etme
 
+profiles:
+  - name: auth-dev
+    deploy:
+      kubectl:
+        manifests:
+          - kubernetes-manifests/postgres-auth/configmap.yaml
+          - kubernetes-manifests/postgres-auth/secret.yaml
+          - kubernetes-manifests/postgres-auth/pvc.yaml
+          - kubernetes-manifests/postgres-auth/deployment.yaml
+          - kubernetes-manifests/postgres-auth/service.yaml
+          - kubernetes-manifests/auth-jwt-secret.yaml
+          - kubernetes-manifests/authservice.yaml
+
+  - name: infra-dev
+    deploy:
+      kubectl:
+        manifests:
+          - kubernetes-manifests/postgres-auth/*.yaml
+          - kubernetes-manifests/auth-jwt-secret.yaml
+
+  - name: full-dev
+    deploy:
+      kubectl:
+        manifests:
+          - kubernetes-manifests/**/*.yaml
