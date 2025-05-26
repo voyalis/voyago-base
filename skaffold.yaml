@@ -1,4 +1,4 @@
-# voyago-base/skaffold.yaml (TAM VERSİYON)
+# voyago-base/skaffold.yaml
 apiVersion: skaffold/v2beta29 
 kind: Config
 metadata:
@@ -24,3 +24,4 @@ deploy:
       - kubernetes-manifests/postgres-auth/deployment.yaml
       - kubernetes-manifests/postgres-auth/service.yaml
       - kubernetes-manifests/authservice.yaml             # AuthService
+
