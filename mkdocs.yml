@@ -1,0 +1,24 @@
+site_name: VoyaGo Docs
+site_description: VoyaGo Ekosistemi Teknik ve Strateji Dokümantasyonu
+repo_url: https://github.com/voyalis/voyago-base
+edit_uri: edit/develop/docs/
+
+nav:
+  - Anasayfa: index.md
+  - Genel Strateji: general-strategy.md
+  - ADR:
+      - 0001: adr/0001-record-context.md
+  - API Referans:
+      - Voyago API: openapi/voyago-api.yaml
+
+theme:
+  name: material
+  palette:
+    primary: indigo
+    accent: indigo
+
+plugins:
+  - search
+
+extra_css:
+  - styles/extra.css
