@@ -24,7 +24,7 @@ spec:
       - name: migrate-auth-db-container
         # Bu 'image:' alanı CI workflow'unda 'placeholder-for-ci-image-replacement'
         # string'i ile değiştirilecek şekilde ayarlanmıştı. Bu placeholder'ı kullanalım.
-        image: placeholder-for-ci-image-replacement # CI'da build edilen AuthService imajı buraya gelecek
+        image: auth-service         # skaﬀold artifact adıyla birebir
         imagePullPolicy: IfNotPresent # Geliştirme için IfNotPresent, CI için Always olabilir
         workingDir: /app # Dockerfile'daki WORKDIR ile aynı olmalı
         command: ["/app/migrate"] # İmaj içindeki migrate CLI'ının tam yolu

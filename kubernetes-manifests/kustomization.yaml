@@ -1,12 +1,54 @@
-# voyago-base/kubernetes-manifests/kustomization.yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+
 resources:
-  # PostgreSQL servislerimiz
-  - ./postgres-auth/configmap.yaml # ./ ile göreceli yol belirttik
-  - ./postgres-auth/secret.yaml
-  - ./postgres-auth/pvc.yaml
-  - ./postgres-auth/deployment.yaml
-  - ./postgres-auth/service.yaml
-  # AuthService'imiz
-  - authservice.yaml # Bu dosya zaten kubernetes-manifests/ altında
+  # PostgreSQL
+  - postgres-auth/configmap.yaml
+  - postgres-auth/secret.yaml
+  - postgres-auth/pvc.yaml
+  - postgres-auth/deployment.yaml
+  - postgres-auth/service.yaml
+
+  # AuthService
+  - auth-jwt-secret.yaml
+  - auth-migration-job.yaml     # ← burada image: auth-service
+  - authservice.yaml
+
+  # Online Boutique
+  - currencyservice.yaml
+  - productcatalogservice.yaml
+  - cartservice.yaml
+  - shippingservice.yaml
+  - paymentservice.yaml
+  - emailservice.yaml
+  - recommendationservice.yaml
+  - adservice.yaml
+  - checkoutservice.yaml
+  - frontend.yaml
+  - loadgenerator.yaml
+
+images:
+  - name: auth-service
+    newName: auth-service
+  - name: frontend
+    newName: frontend
+  - name: cartservice
+    newName: cartservice
+  - name: currencyservice
+    newName: currencyservice
+  - name: productcatalogservice
+    newName: productcatalogservice
+  - name: shippingservice
+    newName: shippingservice
+  - name: paymentservice
+    newName: paymentservice
+  - name: emailservice
+    newName: emailservice
+  - name: recommendationservice
+    newName: recommendationservice
+  - name: adservice
+    newName: adservice
+  - name: checkoutservice
+    newName: checkoutservice
+  - name: loadgenerator
+    newName: loadgenerator
