@@ -109,7 +109,7 @@ jobs:
   deploy-and-e2e-test:
     name: Deploy to Minikube & Run E2E Tests
     needs: build-and-push
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
