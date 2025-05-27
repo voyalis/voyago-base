@@ -162,12 +162,11 @@ jobs:
         run: |
           echo "Preparing Database Migration Job manifest using image: ${IMAGE_FOR_MIGRATION_JOB}"
           
-          # kubernetes-manifests/auth-migration-job.yaml dosyasını kopyala
+           # Orijinal manifest’i kopyala
           cp kubernetes-manifests/auth-migration-job.yaml auth-migration-job-ci.yaml
-          
-          # İmaj yer tutucusunu CI'da build edilen imajla değiştir
-          # placeholder-for-ci-image-replacement string'i auth-migration-job.yaml içinde tam olarak böyle olmalı!
-          sed -i "s|image: placeholder-for-ci-image-replacement|image: ${IMAGE_FOR_MIGRATION_JOB}|g" auth-migration-job-ci.yaml
+
+          # Tüm image satırını, CI tarafından build edilen tam imajla değiştir
+          sed -i -E "s|^(\s*image:\s*).*|\1${IMAGE_FOR_MIGRATION_JOB}|g" auth-migration-job-ci.yaml
           
           echo "--- CI Generated Migration Job Manifest (auth-migration-job-ci.yaml) ---"
           cat auth-migration-job-ci.yaml
