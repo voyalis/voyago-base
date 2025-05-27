@@ -1,0 +1,59 @@
+name: 🚀 Manage Roadmap Milestones
+
+# Manuel tetikleme ve her push'ta çalışsın
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - develop
+      - main
+
+jobs:
+  sync-milestones:
+    runs-on: ubuntu-latest
+
+    # GITHUB_TOKEN bu job için issues: write izni mevcut
+    permissions:
+      issues: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Create or update roadmap milestones
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const roadmap = {
+              "Phase 1: Core & Voyago MVP":    "2025-07-31T23:59:59Z",
+              "Phase 2: Konaklama Entegrasyonu & Olay Altyapısı": "2025-09-30T23:59:59Z",
+              "Phase 3: ERP & Finansal Modüller":                "2025-11-30T23:59:59Z",
+              "Phase 4: E-Ticaret Platformu":                    "2026-02-29T23:59:59Z",
+              "Phase 5: Sosyal Medya Katmanı":                   "2026-05-31T23:59:59Z",
+              "Phase 6: AI Entegrasyonu & Ölçeklenme":           "2026-08-31T23:59:59Z",
+              "Phase 7: DR & Kaos Mühendisliği":                "2026-11-30T23:59:59Z"
+            };
+
+            // Mevcut milestone başlıklarını çek
+            const { data: existing } = await github.rest.issues.listMilestones({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "all",
+              per_page: 100
+            });
+            const titles = existing.map(m => m.title);
+
+            for (const [title, due_on] of Object.entries(roadmap)) {
+              if (!titles.includes(title)) {
+                core.info(`➕ Oluşturuluyor: ${title}`);
+                await github.rest.issues.createMilestone({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title,
+                  due_on,
+                  description: `Milestone for ${title}`
+                });
+              } else {
+                core.info(`✔ Zaten var: ${title}`);
+              }
+            }
