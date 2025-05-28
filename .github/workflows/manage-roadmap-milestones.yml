@@ -1,0 +1,73 @@
+name: 🚀 Sync Roadmap Milestones
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ develop, main ]
+    paths:
+      - '.github/workflows/manage-roadmap-milestones.yml'
+
+permissions:
+  issues: write
+
+jobs:
+  sync-milestones:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create or Ensure Milestones
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const phases = [
+              { title: "Phase 0: Setup & Strategy",
+                due_on: "2025-06-04T23:59:59Z",
+                description: "Strategy alignment, docs integration & repo cleanup" },
+              { title: "Phase 1.1: Core Identity Setup",
+                due_on: "2025-06-18T23:59:59Z",
+                description: "Infra components & Core.Identity blueprint" },
+              { title: "Phase 1: Core & Voyago MVP",
+                due_on: "2025-07-31T23:59:59Z",
+                description: "Core services skeleton, gRPC APIs & end-to-end flow" },
+              { title: "Phase 2: Konaklama & Olay Altyapısı",
+                due_on: "2025-09-30T23:59:59Z",
+                description: "Hotel & reservation integration + event backbone" },
+              { title: "Phase 3: ERP & Finansal Modüller",
+                due_on: "2025-11-30T23:59:59Z",
+                description: "ERP, finance modules & reconciliation flows" },
+              { title: "Phase 4: E-Ticaret Platformu",
+                due_on: "2026-02-29T23:59:59Z",
+                description: "E-commerce storefront, order & inventory" },
+              { title: "Phase 5: Sosyal Medya Katmanı",
+                due_on: "2026-05-31T23:59:59Z",
+                description: "User feeds, messaging & community features" },
+              { title: "Phase 6: AI Entegrasyonu & Ölçeklenme",
+                due_on: "2026-08-31T23:59:59Z",
+                description: "Central AI services & scaling" },
+              { title: "Phase 7: DR & Kaos Mühendisliği",
+                due_on: "2026-11-30T23:59:59Z",
+                description: "Disaster recovery & chaos testing" }
+            ];
+
+            const { data: existing } = await github.rest.issues.listMilestones({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "all",
+              per_page: 100
+            });
+            const titles = new Set(existing.map(m => m.title));
+
+            for (const m of phases) {
+              if (!titles.has(m.title)) {
+                await github.rest.issues.createMilestone({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: m.title,
+                  description: m.description,
+                  due_on: m.due_on
+                });
+                core.info(`➕ Created: ${m.title}`);
+              } else {
+                core.info(`✔ Exists:  ${m.title}`);
+              }
+            }

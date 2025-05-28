@@ -1,24 +1,11 @@
-site_name: VoyaGo Docs
-site_description: VoyaGo Ekosistemi Teknik ve Strateji Dokümantasyonu
+site_name: VoyaGo Omega X
 repo_url: https://github.com/voyalis/voyago-base
-edit_uri: edit/develop/docs/
-
-nav:
-  - Anasayfa: index.md
-  - Genel Strateji: general-strategy.md
-  - ADR:
-      - 0001: adr/0001-record-context.md
-  - API Referans:
-      - Voyago API: openapi/voyago-api.yaml
+edit_uri: edit/main/docs/
 
 theme:
   name: material
-  palette:
-    primary: indigo
-    accent: indigo
 
-plugins:
-  - search
-
-extra_css:
-  - styles/extra.css
+nav:
+  - Home: index.md
+  - Strategy:
+    - Guide v4.3.2: strategy/VOYAGO_OMEGA_X_GUIDE_V4.3.2.md
