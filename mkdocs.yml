@@ -1,11 +1,77 @@
-site_name: VoyaGo Omega X
-repo_url: https://github.com/voyalis/voyago-base
-edit_uri: edit/main/docs/
+# mkdocs.yml
+site_name: "VoyaGo Omega X Dokümantasyonu"
+site_description: "VoyaGo Omega X Ekosistemi için Kapsamlı Mimari, Teknoloji ve Strateji Kılavuzu."
+site_author: "VoyaGo Omega X Çekirdek Ekibi" # Kendi isminizi veya ekibinizi yazabilirsiniz
+repo_url: https://github.com/voyalis/voyago-base # GitHub reponuzun URL'si
+edit_uri: edit/develop/docs/ # Veya 'main' branch'ini kullanıyorsanız 'edit/main/docs/'
 
 theme:
   name: material
+  language: tr # Dokümantasyon dilini Türkçe olarak ayarlar
+  palette:
+    # Açık mod renkleri
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo # Ana renk
+      accent: blue   # Vurgu rengi
+      toggle:
+        icon: material/brightness-7
+        name: Koyu moda geç
+    # Koyu mod renkleri
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      accent: light-blue
+      toggle:
+        icon: material/brightness-4
+        name: Açık moda geç
+  features:
+    - navigation.tabs # Üst navigasyon sekmeleri
+    - navigation.sections # Sol menüde bölümler
+    - navigation.expand # Sol menüde otomatik açılma
+    - navigation.top # Sayfa başına dön butonu
+    - search.suggest # Arama önerileri
+    - search.highlight # Arama sonuçlarını vurgulama
+    - content.code.annotate # Kod bloklarına not ekleme
+    - content.tabs.link # Sekmeli içerikler arasında linkleme
+  icon:
+    repo: fontawesome/brands/github # GitHub ikonu
+
+plugins:
+  - search # Arama eklentisi (varsayılan olarak gelir)
+  # -awesome-pages # Daha gelişmiş navigasyon için (opsiyonel, kurulum gerektirir)
+  # - minify: # HTML küçültme için (opsiyonel, kurulum gerektirir)
+  #     minify_html: true
+
+markdown_extensions:
+  - pymdownx.highlight: # Kod blokları için syntax highlighting
+      anchor_linenums: true
+  - pymdownx.superfences # Gelişmiş kod blokları ve diagramlar için
+  - pymdownx.inlinehilite
+  - pymdownx.snippets # Başka dosyalardan içerik çekme
+  - admonition # Not, uyarı gibi bloklar için
+  - pymdownx.details # Açılır/kapanır detay blokları
+  - pymdownx.tabbed: # Sekmeli içerik
+      alternate_style: true
+  - toc: # İçindekiler tablosu
+      permalink: true # Başlıklara kalıcı link
 
 nav:
-  - Home: index.md
-  - Strategy:
-    - Guide v4.3.2: strategy/VOYAGO_OMEGA_X_GUIDE_V4.3.2.md
+  - "Anasayfa": index.md
+  - "🚀 Strateji Kılavuzu":
+    - "Omega X Kılavuzu v4.3.2": strategy/VOYAGO_OMEGA_X_GUIDE_V4.3.2.md
+  - "🏛️ Mimari Karar Kayıtları (ADR)":
+    - "ADR Şablonu": adr/ADR_TEMPLATE.md
+    # Buraya yeni ADR'ler eklenecek:
+    # - "ADR-001: ...": adr/ADR_001_....md
+  - "📜 API & Olay Sözleşmeleri":
+    - "İsimlendirme ve Sürümleme": contracts/CONTRACT_NAMING_CONVENTIONS.md
+    # Buraya Sınırlı Bağlam bazlı sözleşme linkleri eklenecek:
+    # - "Core.Identity API v1": contracts/core.identity/openapi/v1/core_identity.openapi.yaml
+    # - "Seyahat Olayları v1": contracts/voyago.seyahat/asyncapi/v1/seyahat_events.asyncapi.yaml
+  - "📚 Eski Dokümanlar (Arşiv)":
+    # docs/legacy altındaki dosyalar buraya eklenebilir veya bu bölüm kaldırılabilir.
+    - "Geliştirme Rehberi (Eski)": legacy/development-guide.md
+
+extra_css:
+  - stylesheets/extra.css # Opsiyonel: Kendi CSS stilleriniz için (docs/stylesheets/extra.css dosyası oluşturmalısınız)
