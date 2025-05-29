@@ -17,9 +17,10 @@ nats:
     type: NodePort
 
 # ─────────────────────────────────────────────────────────
-# Chart içi test hook’larını ve nats-box’u kapatma:
+# Chart içi test hook’larını kapatıyoruz:
 tests:
   enabled: false
 
+# nats-box yardımcı pod'unu kapatıyoruz:
 natsBox:
   enabled: false
