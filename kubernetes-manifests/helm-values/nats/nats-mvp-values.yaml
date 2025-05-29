@@ -1,0 +1,29 @@
+# kubernetes-manifests/helm-values/nats/nats-mvp-values.yaml
+nats:
+  jetstream:
+    enabled: true
+    fileStore:
+      enabled: true
+      size: "1Gi"
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+  service:
+    type: NodePort
+
+  # NATS Chart'ının (v1.3.7) testlerini ve nats-box'ı devre dışı bırakmak için
+  # DOĞRU PARAMETRELERİ CHART'IN KENDİ VALUES.YAML DOSYASINDAN BULUN!
+  # Aşağıdakiler yaygın kullanılan isimlerdir ama sizin chart'ınızda farklı olabilir.
+  natsbox:
+    enabled: false 
+  
+  # 'tests' anahtarı chart'ın en üst seviyesinde olabilir veya 'nats.tests' altında olabilir.
+  # Ya da chart testleri natsbox üzerinden yapıyorsa sadece natsbox.enabled:false yeterli olabilir.
+  tests:
+    enabled: false

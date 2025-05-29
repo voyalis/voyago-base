@@ -1,33 +1,23 @@
 apiVersion: skaffold/v2beta29
 kind: Config
 metadata:
-  name: voyago-base
+  name: voyago-omega-x
 
 build:
   tagPolicy:
     gitCommit: {}
   local:
     push: false
-    useDockerCLI: true
-    useBuildkit: true
-  artifacts: []  # Profiller kendi artifact’larını tanımlar
-
-deploy:
-  kubectl:
-    manifests: []  # Defaultta hiç deploy etme
+  artifacts:
+    - image: auth-service
+      context: src/authservice
+      docker:
+        dockerfile: Dockerfile
 
 profiles:
-  #────────────────────────────────────────────────────────
-  # 1) auth-dev: sadece AuthService + Postgres
-  #────────────────────────────────────────────────────────
-  - name: auth-dev
-    build:
-      artifacts:
-        - image: auth-service
-          context: src/authservice
-          docker:
-            dockerfile: Dockerfile
+  - name: omega-x-dev-platform
     deploy:
+      # 1️⃣ AuthService + Postgres
       kubectl:
         manifests:
           - kubernetes-manifests/postgres-auth/configmap.yaml
@@ -36,107 +26,19 @@ profiles:
           - kubernetes-manifests/postgres-auth/deployment.yaml
           - kubernetes-manifests/postgres-auth/service.yaml
           - kubernetes-manifests/auth-jwt-secret.yaml
-          - kubernetes-manifests/auth-migration-job.yaml
           - kubernetes-manifests/authservice.yaml
-    portForward:
-      - resourceType: service
-        resourceName: authservice
-        namespace: default
-        port: 50051
-        localPort: 50051
-      - resourceType: service
-        resourceName: postgres-auth-svc
-        namespace: default
-        port: 5432
-        localPort: 5433
 
-  #────────────────────────────────────────────────────────
-  # 2) online-boutique-only: sadece Boutique servisleri
-  #────────────────────────────────────────────────────────
-  - name: online-boutique-only
-    build:
-      artifacts:
-        - image: frontend
-          context: src/frontend
-        - image: cartservice
-          context: src/cartservice/src
-        - image: currencyservice
-          context: src/currencyservice
-        - image: productcatalogservice
-          context: src/productcatalogservice
-        - image: paymentservice
-          context: src/paymentservice
-        - image: shippingservice
-          context: src/shippingservice
-        - image: emailservice
-          context: src/emailservice
-        - image: checkoutservice
-          context: src/checkoutservice
-        - image: recommendationservice
-          context: src/recommendationservice
-        - image: adservice
-          context: src/adservice
-        - image: loadgenerator
-          context: src/loadgenerator
-    deploy:
-      kubectl:
-        manifests:
-          - kubernetes-manifests/currencyservice.yaml
-          - kubernetes-manifests/productcatalogservice.yaml
-          - kubernetes-manifests/cartservice.yaml
-          - kubernetes-manifests/shippingservice.yaml
-          - kubernetes-manifests/paymentservice.yaml
-          - kubernetes-manifests/emailservice.yaml
-          - kubernetes-manifests/recommendationservice.yaml
-          - kubernetes-manifests/adservice.yaml
-          - kubernetes-manifests/checkoutservice.yaml
-          - kubernetes-manifests/frontend.yaml
-          - kubernetes-manifests/loadgenerator.yaml
-    portForward:
-      - resourceType: service
-        resourceName: frontend-external
-        namespace: default
-        port: 80
-        localPort: 8080
+      # 2️⃣ NATS JetStream (yerel chartPath)
+      helm:
+        releases:
+          - name: voyago-nats
+            chartPath: kubernetes-manifests/charts/nats
+            valuesFiles:
+              - kubernetes-manifests/helm-values/nats/nats-mvp-values.yaml
+            namespace: voyago-infra
+            createNamespace: true
+            wait: true
 
-  #────────────────────────────────────────────────────────
-  # 3) voyago-platform: tüm platformu Kustomize ile deploy
-  #────────────────────────────────────────────────────────
-  - name: voyago-platform
-    build:
-      artifacts:
-        # AuthService
-        - image: auth-service
-          context: src/authservice
-          docker:
-            dockerfile: Dockerfile
-        # Boutique
-        - image: frontend
-          context: src/frontend
-        - image: cartservice
-          context: src/cartservice/src
-        - image: currencyservice
-          context: src/currencyservice
-        - image: productcatalogservice
-          context: src/productcatalogservice
-        - image: paymentservice
-          context: src/paymentservice
-        - image: shippingservice
-          context: src/shippingservice
-        - image: emailservice
-          context: src/emailservice
-        - image: checkoutservice
-          context: src/checkoutservice
-        - image: recommendationservice
-          context: src/recommendationservice
-        - image: adservice
-          context: src/adservice
-        - image: loadgenerator
-          context: src/loadgenerator
-    deploy:
-      kustomize:
-        paths:
-          - kubernetes-manifests
     portForward:
       - resourceType: service
         resourceName: authservice
@@ -149,7 +51,7 @@ profiles:
         port: 5432
         localPort: 5433
       - resourceType: service
-        resourceName: frontend-external
-        namespace: default
-        port: 80
-        localPort: 8080
+        resourceName: voyago-nats
+        namespace: voyago-infra
+        port: 4222
+        localPort: 42220
