@@ -46,6 +46,14 @@ profiles:
             createNamespace: false
             wait: true
 
+          - name: voyago-redis
+            chartPath: kubernetes-manifests/charts/redis
+            valuesFiles:
+              - kubernetes-manifests/helm-values/redis/redis-mvp-values.yaml
+            namespace: voyago-infra
+            createNamespace: false   # zaten infra yarattık
+            wait: true
+
     portForward:
       - resourceType: service
         resourceName: authservice

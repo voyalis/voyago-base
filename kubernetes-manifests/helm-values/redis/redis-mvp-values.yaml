@@ -1,0 +1,33 @@
+architecture: standalone
+
+# Tek node (master) için replicaCount = 0
+replica:
+  replicaCount: 0
+
+# Şifre korumalı
+auth:
+  enabled: true
+  password: "SüperGizliSifre!"
+
+# Veri kalıcılığı
+persistence:
+  enabled: true
+  size: 1Gi
+
+# Kaynak talepleri
+master:
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+# Hizmet tipi
+service:
+  type: ClusterIP
+
+# Helm testlerini kapatıyoruz
+tests:
+  enabled: false
