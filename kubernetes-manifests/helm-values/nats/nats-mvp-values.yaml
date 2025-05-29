@@ -1,0 +1,23 @@
+nats:
+  jetstream:
+    enabled: true
+    fileStore:
+      enabled: true
+      size: "1Gi"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+  service:
+    type: NodePort
+
+# Chart'ın test hook'larını kapatıyoruz
+tests:
+  enabled: false
+
+# nats-box helper pod'unu devre dışı bırakıyoruz
+natsBox:
+  enabled: false

@@ -72,6 +72,10 @@ nav:
   - "📚 Eski Dokümanlar (Arşiv)":
     # docs/legacy altındaki dosyalar buraya eklenebilir veya bu bölüm kaldırılabilir.
     - "Geliştirme Rehberi (Eski)": legacy/development-guide.md
+  - Altyapı Bileşenleri:
+    - NATS Kurulumu: infra/nats-setup.md
+    - Kong API Gateway Kurulumu: infra/kong-api-gateway-setup.md
+  
 
 extra_css:
   - stylesheets/extra.css # Opsiyonel: Kendi CSS stilleriniz için (docs/stylesheets/extra.css dosyası oluşturmalısınız)
