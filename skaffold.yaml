@@ -54,6 +54,14 @@ profiles:
             createNamespace: false   # zaten infra yarattık
             wait: true
 
+          - name: voyago-observability
+            chartPath: kubernetes-manifests/charts/kube-prometheus-stack
+            valuesFiles:
+              - kubernetes-manifests/helm-values/observability/prometheus-grafana-mvp-values.yaml
+            namespace: voyago-monitoring
+            createNamespace: true
+            wait: true
+
     portForward:
       - resourceType: service
         resourceName: authservice
