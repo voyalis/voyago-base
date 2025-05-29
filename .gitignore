@@ -28,3 +28,5 @@ release/wi-kubernetes-manifests.yaml
 vendor/
 skaffold
 kubernetes-manifests/auth-jwt-secret.yaml
+
+.venv_docs/
