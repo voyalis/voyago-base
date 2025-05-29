@@ -4,7 +4,6 @@ nats:
     fileStore:
       enabled: true
       size: "1Gi"
-
   resources:
     requests:
       cpu: "100m"
@@ -12,15 +11,13 @@ nats:
     limits:
       cpu: "500m"
       memory: "1Gi"
-
   service:
     type: NodePort
 
-# ─────────────────────────────────────────────────────────
-# Chart içi test hook’larını kapatıyoruz:
+# Chart'ın test hook'larını kapatıyoruz
 tests:
   enabled: false
 
-# nats-box yardımcı pod'unu kapatıyoruz:
+# nats-box helper pod'unu devre dışı bırakıyoruz
 natsBox:
   enabled: false

@@ -17,9 +17,9 @@ build:
 profiles:
   - name: omega-x-dev-platform
     deploy:
-      # 1️⃣ AuthService + Postgres
       kubectl:
         manifests:
+          # AuthService + Postgres
           - kubernetes-manifests/postgres-auth/configmap.yaml
           - kubernetes-manifests/postgres-auth/secret.yaml
           - kubernetes-manifests/postgres-auth/pvc.yaml
@@ -28,16 +28,22 @@ profiles:
           - kubernetes-manifests/auth-jwt-secret.yaml
           - kubernetes-manifests/authservice.yaml
 
-      # 2️⃣ NATS JetStream (yerel chartPath)
       helm:
         releases:
           - name: voyago-nats
             chartPath: kubernetes-manifests/charts/nats
-            skipBuildDependencies: true       # ← burayı ekledik
             valuesFiles:
               - kubernetes-manifests/helm-values/nats/nats-mvp-values.yaml
             namespace: voyago-infra
             createNamespace: true
+            wait: true
+
+          - name: voyago-kong
+            chartPath: kubernetes-manifests/charts/kong
+            valuesFiles:
+              - kubernetes-manifests/helm-values/kong/kong-mvp-values.yaml
+            namespace: voyago-infra
+            createNamespace: false
             wait: true
 
     portForward:
@@ -56,3 +62,8 @@ profiles:
         namespace: voyago-infra
         port: 4222
         localPort: 42220
+      - resourceType: service
+        resourceName: voyago-kong-kong-proxy
+        namespace: voyago-infra
+        port: 8000    # <-- artık servicePort=8000
+        localPort: 8000

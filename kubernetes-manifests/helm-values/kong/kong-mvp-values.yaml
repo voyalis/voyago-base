@@ -1,29 +1,39 @@
-# kubernetes-manifests/helm-values/kong/kong-mvp-values.yaml
-image:
-  repository: kong/kong
-  tag: "3.6"          # Chart’tan teyit edin
+# Kong Helm Chart için MVP values
 
+# 1) Image
+image:
+  repository: kong
+  tag: "3.6"
+
+# 2) DB-less mod
+env:
+  database: "off"
+
+# 3) Admin API
 admin:
   enabled: true
   type: NodePort
   http:
     enabled: true
-    nodePort: 30001
+    servicePort: 8001   # cluster içi port
+    nodePort: 30001     # Minikube NodePort
 
+# 4) Proxy (ana trafik)
 proxy:
   enabled: true
   type: NodePort
   http:
     enabled: true
-    nodePort: 30000
+    containerPort: 8000   # Kong'un container portu
+    servicePort: 8000     # cluster içi port olarak 8000 expose ediliyor
+    nodePort: 30000       # Minikube NodePort
 
-env:
-  database: "off"     # DB-less modu
-
+# 5) Ingress Controller & CRD yönetimi
 ingressController:
   enabled: true
-  installCRDs: true
+  installCRDs: false     # CRD'leri zaten manuel uyguladık
 
+# 6) Kaynak istek ve limitler
 resources:
   requests:
     cpu: "200m"
@@ -32,6 +42,10 @@ resources:
     cpu: "1"
     memory: "1Gi"
 
-# Chart’ın test hook’larını kapatmak için:
+# 7) Test hook'larını kapatalım
 test:
   enabled: false
+
+# 8) CRD'lerin chart tarafından otomatik kurulmasını kapatalım
+crds:
+  create: false
