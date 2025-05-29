@@ -1,0 +1,37 @@
+# kubernetes-manifests/helm-values/kong/kong-mvp-values.yaml
+image:
+  repository: kong/kong
+  tag: "3.6"          # Chart’tan teyit edin
+
+admin:
+  enabled: true
+  type: NodePort
+  http:
+    enabled: true
+    nodePort: 30001
+
+proxy:
+  enabled: true
+  type: NodePort
+  http:
+    enabled: true
+    nodePort: 30000
+
+env:
+  database: "off"     # DB-less modu
+
+ingressController:
+  enabled: true
+  installCRDs: true
+
+resources:
+  requests:
+    cpu: "200m"
+    memory: "256Mi"
+  limits:
+    cpu: "1"
+    memory: "1Gi"
+
+# Chart’ın test hook’larını kapatmak için:
+test:
+  enabled: false
