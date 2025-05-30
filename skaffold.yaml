@@ -62,6 +62,15 @@ profiles:
             createNamespace: true
             wait: true
 
+          - name: voyago-observability-loki
+            chartPath: kubernetes-manifests/charts/loki-stack
+            valuesFiles:
+              - kubernetes-manifests/helm-values/observability/loki-mvp-values.yaml
+            namespace: voyago-monitoring
+            createNamespace: false   # namespace’i bir önceki adımda oluşturduk
+            wait: true
+
+
     portForward:
       - resourceType: service
         resourceName: authservice

@@ -27,9 +27,8 @@ tests.enabled: false: Helm test hook’larını kapattık
 3. Skaffold Entegrasyonu
 skaffold.yaml içindeki omega-x-dev-platform profiline şu release’i ekleyin:
 
-yaml
-Kopyala
-Düzenle
+```yaml
+
 - name: voyago-observability
   chartPath: kubernetes-manifests/charts/kube-prometheus-stack
   valuesFiles:
@@ -37,13 +36,15 @@ Düzenle
   namespace: voyago-monitoring
   createNamespace: true
   wait: true
+  ```
 4. Deploy & Test
-bash
-Kopyala
-Düzenle
+```bash
 skaffold dev -p omega-x-dev-platform
+```
+```bash
 kubectl get pods,svc -n voyago-monitoring
 # Prometheus:
 kubectl port-forward -n voyago-monitoring svc/voyago-observability-kube-prometheus 9090:9090
 # Grafana:
 kubectl port-forward -n voyago-monitoring svc/voyago-observability-grafana 3000:80
+```
