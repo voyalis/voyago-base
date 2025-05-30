@@ -1,4 +1,4 @@
-# Loki & Promtail Kurulumu (Issue #15c)
+#  1.1.5 Loki & Promtail Kurulumu (Issue #15c)
 
 Minikube + Skaffold ortamında log toplama için Grafana Loki ve Promtail bileşenlerini Helm chart ile nasıl kuracağımızı anlatır.
 

@@ -11,10 +11,15 @@ Bu rehberde, Minikube üzerinde Bitnami Redis Helm chart’ı kullanarak **tek n
 - Minikube v1.34+
 - `helm repo add bitnami https://charts.bitnami.com/bitnami` ve `helm repo update` komutları çalışmış olmalı
 
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+```
+
 ## 1. Chart’ı İndirme ve Hazırlık
 
 ```bash
-# Eski chart klasörünü kaldırıp yeniden oluşturuyoruz
+# Eski chart klasörünü sil
 rm -rf kubernetes-manifests/charts/redis
 mkdir -p kubernetes-manifests/charts
 
@@ -26,6 +31,9 @@ helm pull bitnami/redis \
 
 # Test hook’larını siliyoruz
 rm -rf kubernetes-manifests/charts/redis/templates/tests
+
+# (Opsiyonel) Bağımlılık kontrolü
+helm dependency build kubernetes-manifests/charts/redis
 
 ```
 
@@ -71,6 +79,14 @@ tests:
 ```
 Not: Şifreyi daha güvenli yönetmek için bu değeri bir Kubernetes Secret üzerinden de verebilirsiniz.
 
+* replicaCount=0 → tek node
+
+* auth.password → Redis şifresi
+
+* persistence → PVC üzerinde veri saklama
+
+* tests.enabled=false → Helm test hook’ları kapalı
+
 ## 3. Skaffold Entegrasyonu
 skaffold.yaml içindeki omega-x-dev-platform profiline aşağıdaki release’i ekleyin:
 
@@ -89,12 +105,41 @@ skaffold.yaml içindeki omega-x-dev-platform profiline aşağıdaki release’i 
           wait: true
 ```
 
-## 4. Deploy
+## 4. Deploy & Test
+1. Deploy
 ```bash
 skaffold dev -p omega-x-dev-platform
-
 ```
 Bu komut, NATS, Kong ve Redis release’lerini sırasıyla ayağa kaldıracaktır.
+
+2. Pod & servis kontrolü
+```bash
+kubectl get statefulset,svc -n voyago-infra
+```
+
+3. Cluster içi test
+```bash
+kubectl run redis-test \
+  --namespace voyago-infra \
+  --restart=Never \
+  --image=bitnami/redis:7.0.8-debian-11-r13 \
+  --command -- \
+  redis-cli -h voyago-redis-master -a "SüperGizliSifre!" ping
+# → PONG
+```
+
+4. Port-forward & dıştan test
+```bash
+kubectl port-forward -n voyago-infra svc/voyago-redis-master 16379:6379 &
+redis-cli -h 127.0.0.1 -p 16379 -a "SüperGizliSifre!" ping
+# → PONG
+```
+
+5. Temizlik
+```bash
+kubectl delete pod redis-test -n voyago-infra
+kill %1  # port-forward
+```
 
 ## 5. Çalıştığını Doğrulama
 A) Cluster içinden test
