@@ -1,0 +1,48 @@
+# loki-mvp-values.yaml
+
+loki:
+  persistence:
+    enabled: true          # Veriler PVC üzerinde kalıcı tutulacak
+    size: 5Gi              # PVC boyutu
+  schema_config:
+    configs:
+      - from: 2020-10-24
+        store: boltdb-shipper
+        object_store: filesystem
+        schema: v11
+        index:
+          prefix: index_
+          period: 24h
+  storage_config:
+    boltdb_shipper:
+      active_index_directory: /data/loki/boltdb-shipper-active
+      cache_location: /data/loki/boltdb-shipper-cache
+      cache_ttl: 24h
+      shared_store: filesystem
+    filesystem:
+      directory: /data/loki/chunks
+  resources:
+    requests:
+      cpu: 150m
+      memory: 384Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+promtail:
+  enabled: true
+  config:
+    lokiAddress: http://voyago-observability-loki-stack-loki:3100/loki/api/v1/push
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+grafana:
+  enabled: false    # kube-prometheus-stack ile zaten Grafana var, tekrar kurmayalım
+
+test:
+  enabled: false    # Chart’ın test job’larını kapatıyoruz
