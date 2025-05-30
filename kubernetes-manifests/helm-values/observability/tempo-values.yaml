@@ -1,0 +1,19 @@
+replicaCount: 1
+
+# storage backend (örneğin filesystem)
+storage:
+  trace:
+    backend: filesystem
+    filesystem:
+      directory: /data/tempo
+
+ingester:
+  replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 3200
+
+# Grafana’da datasource olarak eklemek için
+grafana:
+  enabled: false  # zaten ayrı bir Grafana var, sadece tempo’yı deploy ediyoruz

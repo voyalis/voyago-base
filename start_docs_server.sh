@@ -17,7 +17,9 @@ fi
 # 2. Sanal ortamı bu script içinde geçici olarak aktifleştir
 # (Bu, script bittiğinde dış kabuğu etkilemez, ama script içindeki komutlar
 # sanal ortamın Python ve pip'ini kullanır)
+# shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
+# shellcheck disable=SC2181
 if [ $? -ne 0 ]; then
     echo "❌ HATA: Sanal ortam ($VENV_DIR) aktifleştirilemedi."
     exit 1

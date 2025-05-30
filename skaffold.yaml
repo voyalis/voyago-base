@@ -70,6 +70,15 @@ profiles:
             createNamespace: false   # namespace’i bir önceki adımda oluşturduk
             wait: true
 
+          - name: voyago-tempo
+            chartPath: kubernetes-manifests/charts/tempo
+            valuesFiles:
+              - kubernetes-manifests/helm-values/observability/tempo-values.yaml
+            namespace: voyago-monitoring
+            createNamespace: false
+            wait: true
+            skipBuildDependencies: true
+
 
     portForward:
       - resourceType: service

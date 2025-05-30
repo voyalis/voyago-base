@@ -44,5 +44,5 @@ promtail:
 grafana:
   enabled: false    # kube-prometheus-stack ile zaten Grafana var, tekrar kurmayalım
 
-test:
+testFramework:
   enabled: false    # Chart’ın test job’larını kapatıyoruz
