@@ -78,6 +78,15 @@ profiles:
             createNamespace: false
             wait: true
             skipBuildDependencies: true
+            
+          - name: voyago-otel-collector
+            chartPath: kubernetes-manifests/charts/opentelemetry-collector
+            valuesFiles:
+              - kubernetes-manifests/helm-values/observability/otel-collector-mvp-values.yaml
+            namespace: voyago-monitoring
+            createNamespace: false   # zaten namespace var
+            wait: true
+            skipBuildDependencies: true
 
 
     portForward:
@@ -86,18 +95,72 @@ profiles:
         namespace: default
         port: 50051
         localPort: 50051
+      
       - resourceType: service
         resourceName: postgres-auth-svc
         namespace: default
         port: 5432
         localPort: 5433
+      
       - resourceType: service
         resourceName: voyago-nats
         namespace: voyago-infra
         port: 4222
         localPort: 42220
+      
       - resourceType: service
-        resourceName: voyago-kong-kong-proxy
+        resourceName: voyago-kong-kong-proxy # Bu ismi kubectl get svc -n voyago-infra ile teyit etmiştik
         namespace: voyago-infra
-        port: 8000    # <-- artık servicePort=8000
+        port: 8000 # Kong proxy HTTP portu (values.yaml'daki servicePort)
         localPort: 8000
+      
+      - resourceType: service
+        resourceName: voyago-kong-kong-admin # Kong admin API servisi
+        namespace: voyago-infra
+        port: 8001 # Kong admin API portu
+        localPort: 8001
+      
+      - resourceType: service
+        resourceName: voyago-redis-master
+        namespace: voyago-infra
+        port: 6379
+        localPort: 16379 # Redis için
+      
+      # GÖZLEMLENEBİLİRLİK PORT FORWARD'LARI
+      - resourceType: service
+        resourceName: voyago-observability-grafana # Grafana servisi
+        namespace: voyago-monitoring
+        port: 80       # Grafana servisinin cluster içindeki portu (genellikle 80)
+        localPort: 3000  # Yerelde Grafana'ya erişeceğimiz port
+      
+      - resourceType: service
+        resourceName: voyago-observability-kube-prometheus # Prometheus servisi
+        namespace: voyago-monitoring
+        port: 9090     # Prometheus servisinin portu
+        localPort: 9090  # Yerelde Prometheus'a erişeceğimiz port
+      
+      - resourceType: service
+        resourceName: voyago-observability-kube-alertmanager # Alertmanager servisi
+        namespace: voyago-monitoring
+        port: 9093     # Alertmanager servisinin portu
+        localPort: 9093  # Yerelde Alertmanager'a erişeceğimiz port
+      
+      - resourceType: service
+        resourceName: voyago-tempo # Tempo query frontend servisi
+        namespace: voyago-monitoring
+        # Tempo chart'ının query frontend için hangi portu kullandığını teyit et (genellikle 3100 veya 3200)
+        # kubectl get svc voyago-tempo -n voyago-monitoring çıktısında 3100/TCP görünüyor.
+        port: 3100     # Tempo query frontend portu
+        localPort: 32000 # Yerelde Tempo'ya erişeceğimiz port (Grafana bağlantısı için)
+      
+      - resourceType: service
+        resourceName: voyago-otel-collector-opentelemetry-collector # OTel Collector servisi
+        namespace: voyago-monitoring
+        port: 4317     # OTLP gRPC portu
+        localPort: 43170 # Yereldeki port (0'ı ekledim karışmasın diye)
+      
+      - resourceType: service
+        resourceName: voyago-otel-collector-opentelemetry-collector
+        namespace: voyago-monitoring
+        port: 4318     # OTLP HTTP portu
+        localPort: 43180

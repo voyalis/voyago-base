@@ -23,7 +23,7 @@ Yerel geliştirme ortamınızı kurmak ve projeye katkıda bulunmak için lütfe
 1. Python 3 ve pip'in kurulu olduğundan emin olun.
 2. Gerekli paketleri kurun: `pip3 install mkdocs mkdocs-material` *(Eğer `mkdocs.yml` içinde tema olarak `material` tanımlıysa bu paket gereklidir. Eğer `readthedocs` ise, sadece `mkdocs` yeterli olabilir veya `mkdocs-readthedocs-theme` gerekebilir. `mkdocs.yml`'deki `theme.name` değerini kontrol edin.)*
 3. Proje kök dizininde: `mkdocs serve`
-4. Tarayıcınızda `http://127.0.0.1:8000` adresini açın.
+4. Tarayıcınızda `http://127.0.0.1:8001` adresini açın.
 
 ## 🤝 Katkıda Bulunma
 (Katkıda bulunma yönergeleri daha sonra eklenecektir.)

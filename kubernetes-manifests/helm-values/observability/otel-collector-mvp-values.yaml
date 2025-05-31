@@ -1,0 +1,44 @@
+# kubernetes-manifests/helm-values/observability/otel-collector-mvp-values.yaml
+
+image:
+  repository: "otel/opentelemetry-collector-contrib"
+  tag:        "0.126.0"
+  pullPolicy: IfNotPresent
+
+mode: deployment
+replicaCount: 1
+
+config:
+  receivers:
+    otlp:
+      protocols:
+        grpc: {}   # port 4317
+        http: {}   # port 4318
+  processors:
+    batch: {}
+    memory_limiter:
+      check_interval: 1s
+      limit_mib:      400
+      limit_percentage: 80
+      spike_limit_mib: 200
+      spike_limit_percentage: 25
+  exporters:
+    debug: {}    # “logging” yerine “debug”
+    otlp/tempo:
+      endpoint: "voyago-tempo.voyago-monitoring.svc.cluster.local:4317"
+      tls:
+        insecure: true
+  service:
+    pipelines:
+      traces:
+        receivers:  [otlp]
+        processors: [memory_limiter, batch]
+        exporters:  [otlp/tempo, debug]
+
+resources:
+  requests:
+    cpu:    100m
+    memory: 128Mi
+  limits:
+    cpu:    500m
+    memory: 512Mi
