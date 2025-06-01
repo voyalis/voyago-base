@@ -10,9 +10,9 @@ build:
     push: false
   artifacts:
     - image: auth-service
-      context: src/authservice
+      context: .
       docker:
-        dockerfile: Dockerfile
+        dockerfile: src/core.identity/authservice/Dockerfile
 
 profiles:
   - name: omega-x-dev-platform
@@ -26,6 +26,7 @@ profiles:
           - kubernetes-manifests/postgres-auth/deployment.yaml
           - kubernetes-manifests/postgres-auth/service.yaml
           - kubernetes-manifests/auth-jwt-secret.yaml
+          - kubernetes-manifests/auth-migration-job.yaml
           - kubernetes-manifests/authservice.yaml
 
       helm:
