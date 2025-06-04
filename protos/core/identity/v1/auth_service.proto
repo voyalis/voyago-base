@@ -23,7 +23,7 @@ message LoginResponse {
   UserInfo user = 1;
   string access_token = 2;
   string refresh_token = 3; // MVP için kritik
-  int32 expires_in = 4; // Access token geçerlilik süresi (saniye)
+  int32 expires_in = 4;      // Access token geçerlilik süresi (saniye)
 }
 
 message ValidateTokenRequest {
@@ -37,7 +37,7 @@ message ValidateTokenResponse {
 message RefreshAccessTokenRequest {
   string refresh_token = 1;
 }
-// RefreshAccessToken için yanıt olarak LoginResponse kullanılacak (yeni access + refresh token)
+// RefreshAccessToken için yanıt olarak LoginResponse kullanılacak
 
 // Oturumu Sonlandırma
 message LogoutRequest {
@@ -70,16 +70,12 @@ message ConfirmPasswordResetRequest {
   string new_password = 2;
 }
 message ConfirmPasswordResetResponse {
-  string message = 1;   // Örneğin: "Şifreniz başarıyla güncellendi."
+  string message = 1; // Örneğin: "Şifreniz başarıyla güncellendi."
 }
 
 // E-posta Doğrulama
 message RequestEmailVerificationRequest {
-  // E-posta doğrulama talebi için genellikle kullanıcının login olması ve
-  // kendi e-postasını doğrulaması beklenir. Bu yüzden access_token alabiliriz.
-  // VEYA, kayıt sonrası otomatik gönderiliyorsa, email adresi yeterli olabilir.
-  // Şimdilik, kayıtlı bir kullanıcının kendi e-postasını doğrulaması senaryosunu düşünelim.
-  string access_token = 1; // Hangi kullanıcının e-postasını doğrulayacağı (kimlik doğrulama için)
+  string access_token = 1; // E-posta doğrulama talebi için
 }
 message RequestEmailVerificationResponse {
   string message = 1;          // Örn: "E-posta doğrulama linki e-posta adresinize gönderildi."
@@ -91,15 +87,14 @@ message ConfirmEmailVerificationRequest {
 }
 
 message ConfirmEmailVerificationResponse {
-  string message = 1;         // Örn: "E-posta adresiniz başarıyla doğrulandı."
-  UserInfo user = 2;          // E-postası doğrulanmış güncel kullanıcı bilgisi
+  string message = 1;        // Örn: "E-posta adresiniz başarıyla doğrulandı."
+  UserInfo user = 2;         // E-postası doğrulanmış güncel kullanıcı bilgisi
 }
 
 // Kullanıcı Metadata Güncelleme
 message UpdateUserMetadataRequest {
   string access_token = 1;
   string full_name = 2;
-  // map<string, string> user_metadata = 3; // MVP sonrası eklenebilir
 }
 message UpdateUserMetadataResponse {
   UserInfo user = 1;
@@ -107,12 +102,12 @@ message UpdateUserMetadataResponse {
 
 // Ortak Kullanıcı Bilgisi Mesajı
 message UserInfo {
-  string user_id = 1;       // UUID
-  string email = 2;
-  string full_name = 3;
+  string user_id       = 1; // UUID
+  string email         = 2;
+  string full_name     = 3;
   repeated string roles = 4;
-  bool is_active = 5;       // MVP Kritik
-  bool email_verified = 6;  // MVP için önemli
+  bool is_active       = 5; // MVP Kritik
+  bool email_verified  = 6; // MVP için önemli
 }
 
 service AuthService {
@@ -120,8 +115,8 @@ service AuthService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   rpc Login(LoginRequest) returns (LoginResponse);
   rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);
-  rpc RefreshAccessToken(RefreshAccessTokenRequest) returns (LoginResponse); // MVP Kritik
-  rpc Logout(LogoutRequest) returns (LogoutResponse);                       // MVP Kritik
+  rpc RefreshAccessToken(RefreshAccessTokenRequest) returns (LoginResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
 
   // Şifre ve Hesap Yönetimi RPC'leri
   rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
@@ -129,9 +124,12 @@ service AuthService {
   rpc ConfirmPasswordReset(ConfirmPasswordResetRequest) returns (ConfirmPasswordResetResponse);
 
   // E-posta Doğrulama RPC'leri
-  rpc RequestEmailVerification(RequestEmailVerificationRequest) returns (RequestEmailVerificationResponse);
-  rpc ConfirmEmailVerification(ConfirmEmailVerificationRequest) returns (ConfirmEmailVerificationResponse);
+  rpc RequestEmailVerification(RequestEmailVerificationRequest)
+      returns (RequestEmailVerificationResponse);
+  rpc ConfirmEmailVerification(ConfirmEmailVerificationRequest)
+      returns (ConfirmEmailVerificationResponse);
 
   // Kullanıcı Bilgileri Güncelleme
-  rpc UpdateUserMetadata(UpdateUserMetadataRequest) returns (UpdateUserMetadataResponse);
+  rpc UpdateUserMetadata(UpdateUserMetadataRequest)
+      returns (UpdateUserMetadataResponse);
 }

@@ -7,13 +7,13 @@ Tüm sözleşme tanımları, projenin kök dizinindeki `contracts/` klasörü al
 
 Yapı aşağıdaki gibi olacaktır:
 contracts/
-├── {bounded-context}                   // Örn: core.identity, voyago.seyahat
+├── {bounded-context}                   // Örn: core/identity, voyago.seyahat
 │   ├── {api-type}                      // Örn: proto, openapi, asyncapi
 │   │   ├── v{MAJOR}.{MINOR}            // SemVer'e göre ana ve ikincil sürüm
 │   │   │   └── {contract-name}.{ext} // Örn: auth_service.proto, trip_api.v1.openapi.yaml
 │   │   └── LATEST                      // Opsiyonel: En son kararlı MAJOR.MINOR sürümüne sembolik link veya kopya
 
-* **`<bounded-context>`:** Sınırlı Bağlamın küçük harf ve `.` ile ayrılmış adı (örn: `core.identity`, `voyago.seyahat`).
+* **`<bounded-context>`:** Sınırlı Bağlamın küçük harf ve `.` ile ayrılmış adı (örn: `core/identity`, `voyago.seyahat`).
 * **`<api-type>`:** Sözleşme türü (`proto`, `openapi`, `asyncapi`).
 * **`v{MAJOR}.{MINOR}`:** Semantik Versiyonlamaya göre MAJOR ve MINOR sürüm numarası. PATCH sürümleri genellikle dosya veya dizin adında belirtilmez, Git geçmişinden takip edilir.
 * **`<contract-name>.{ext}`:** Sözleşmenin amacını yansıtan, küçük harf ve alt çizgi (`_`) ile ayrılmış dosya adı ve uygun uzantı (`.proto`, `.yaml`, `.json`).

@@ -25,7 +25,7 @@ jobs:
                 description: "Strategy alignment, docs integration & repo cleanup" },
               { title: "Phase 1.1: Core Identity Setup",
                 due_on: "2025-06-18T23:59:59Z",
-                description: "Infra components & Core.Identity blueprint" },
+                description: "Infra components & core/identity blueprint" },
               { title: "Phase 1: Core & Voyago MVP",
                 due_on: "2025-07-31T23:59:59Z",
                 description: "Core services skeleton, gRPC APIs & end-to-end flow" },

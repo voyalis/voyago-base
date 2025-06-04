@@ -207,7 +207,7 @@ func mustMapEnv(target *string, envKey string) {
 
 func mustConnGRPC(ctx context.Context, conn **grpc.ClientConn, addr string) {
 	var err error
-	ctx, cancel := context.WithTimeout(ctx, time.Second*3)
+	ctx, cancel := context.WithTimeout(ctx, time.Second*10)
 	defer cancel()
 	*conn, err = grpc.DialContext(ctx, addr,
 		grpc.WithInsecure(),

@@ -1,0 +1,139 @@
+# kubernetes-manifests/kustomize/authservice/deployment-service.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: authservice
+  namespace: default        # şunun üzerinden kustomize de ekleniyor olabilir
+  labels:
+    app: authservice
+    component: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: authservice
+      component: backend
+  template:
+    metadata:
+      labels:
+        app: authservice
+        component: backend
+    spec:
+      automountServiceAccountToken: false
+      serviceAccountName: default
+
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:15-alpine
+          env:
+            - name: PGHOST
+              value: "postgres-auth-svc"
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              valueFrom:
+                configMapKeyRef:
+                  name: postgres-auth-config
+                  key: POSTGRES_USER
+            - name: PGDATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: postgres-auth-config
+                  key: POSTGRES_DB
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -q -h postgres-auth-svc -p 5432 -U ${PGUSER} -d ${PGDATABASE}; do
+                sleep 2
+              done
+
+      containers:
+        - name: authservice
+          image: authservice
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 50051
+              name: grpc
+          env:
+            - name: PORT
+              value: "50051"
+            - name: DB_HOST
+              value: "postgres-auth-svc"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: postgres-auth-config
+                  key: POSTGRES_USER
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: postgres-auth-config
+                  key: POSTGRES_DB
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-auth-secret
+                  key: POSTGRES_PASSWORD
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: auth-jwt-secret
+                  key: jwtSecret
+
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "voyago-otel-collector-opentelemetry-collector.voyago-monitoring.svc.cluster.local:4317"
+            
+            - name: OTEL_SERVICE_NAME 
+              value: "authservice" # main.go'daki defaultServiceName ile aynı
+            
+            - name: OTEL_SERVICE_VERSION
+              value: "0.1.0" # Veya güncel versiyonunuz
+            
+            - name: OTEL_DEPLOYMENT_ENVIRONMENT
+              value: "development-minikube" # Veya ortamınıza uygun bir değer
+            
+            - name: LOG_LEVEL # Opsiyonel: main.go içindeki log seviyesini kontrol eder
+              value: "DEBUG" 
+          
+          readinessProbe:
+            grpc:
+              port: 50051
+            initialDelaySeconds: 25
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            grpc:
+              port: 50051
+              # service: ""
+            initialDelaySeconds: 35
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: authservice
+  namespace: default # Namespace burada belirtilmeli - YENİ EKLENDİ
+  labels:
+    app: authservice
+    component: backend
+spec:
+  type: ClusterIP
+  selector:
+    app: authservice
+    component: backend
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051
+      protocol: TCP

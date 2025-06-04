@@ -1,0 +1,20 @@
+    # kubernetes-manifests/kustomize/authservice/kustomization.yaml
+    apiVersion: kustomize.config.k8s.io/v1beta1
+    kind: Kustomization
+
+    # Bu Kustomize overlay'i için varsayılan namespace.
+    # deployment-service.yaml içindeki kaynaklar bu namespace'e ait olacak.
+    namespace: default
+
+    # Kustomize'ın işleyeceği kaynak dosyası.
+    resources:
+      - deployment-service.yaml 
+
+    # Skaffold'un build ettiği 'authservice' imajının etiketini
+    # 'deployment-service.yaml' içindeki 'image: authservice' alanına
+    # otomatik olarak enjekte etmesi için.
+    images:
+      - name: authservice # Bu ad, skaffold.yaml'daki build.artifacts[].image ile eşleşmeli
+        newName: authservice # Genellikle imaj adı değişmez, sadece etiket eklenir
+        newTag: "" # Skaffold bu alanı build sırasında ürettiği etiketle dolduracak
+    

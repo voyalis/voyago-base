@@ -12,7 +12,7 @@ Sınırlı Bağlam (Bounded Context) – "Metropolün Uzmanlaşmış Bölgeleri/
 
 Metafor: Metropolümüz, her biri kendine özgü işlevlere, kurallara, uzmanlık diline ve kültüre sahip farklı bölgelerden (Finans Merkezi, Turizm Semti, Sanayi Bölgesi, Eğitim Kampüsü, Alışveriş Caddeleri, İdari Yönetim Merkezi vb.) oluşur.
 
-VoyaGo'da Anlamı: Her ana iş alanı (örn: Voyago.Seyahat, OmegaCommerce, Core.Identity) kendi içinde tutarlı bir model ve dil barındıran, sınırları net bir "Sınırlı Bağlam"dır. Bu, karmaşıklığı yönetmemizi ve her bölgenin kendi odağında mükemmelleşmesini sağlar.
+VoyaGo'da Anlamı: Her ana iş alanı (örn: Voyago.Seyahat, OmegaCommerce, core/identity) kendi içinde tutarlı bir model ve dil barındıran, sınırları net bir "Sınırlı Bağlam"dır. Bu, karmaşıklığı yönetmemizi ve her bölgenin kendi odağında mükemmelleşmesini sağlar.
 
 Önce Sözleşme (Contract-First) – "Resmi İmar Planları ve Ticaret Anlaşmaları":
 
@@ -53,7 +53,7 @@ Temel Mimari İlkelerimiz (Şehir Planlama Prensiplerimiz)
 
 Anlaşmaların Kayıt Ofisi (Merkezi Şema Yönetimi) ve Anlaşma Değişiklikleri Yönetmeliği (Versiyonlama Politikaları)
 
-Örnek Mahalle İnşaat Planları (Blueprint'ler: Core.Identity, Voyago.Seyahat, OmegaCommerce)
+Örnek Mahalle İnşaat Planları (Blueprint'ler: core/identity, Voyago.Seyahat, OmegaCommerce)
 
 Otomatik İnşaat ve Denetim Sistemimiz (CI/CD & Sözleşme Testleri)
 
@@ -101,7 +101,7 @@ Temel İçerik ("Bölgedeki Ana Binalar/Hizmetler")
 
 Ana API Sözleşme Türleri (İletişim Şekli)
 
-Core.Identity (Valilik & Nüfus Md.)
+core/identity (Valilik & Nüfus Md.)
 
 Tüm kullanıcıların (bireysel, kurumsal, sistem) kimlik doğrulaması, yetkilendirmesi ve temel profil yönetimi.
 
@@ -255,7 +255,7 @@ Dizin Yapısı (Git-Tabanlı Örnek):
             /v{MAJOR}.{MINOR}
                 schema_file.ext
 
-Örnek: /contracts/core.identity/proto/v1.0/auth_service.proto
+Örnek: /contracts/core/identity/proto/v1.0/auth_service.proto
 
 Kurallar (Noter Onay Süreci):
 
@@ -286,13 +286,13 @@ MINOR/PATCH versiyonları için URL değişikliği yapılmaz; bunlar genellikle 
 
 Paket ve Modül Versiyonlama (gRPC/Protobuf için):
 
-Protobuf paket isimleri MAJOR versiyonu içerebilir (örn: package core.identity.v1;).
+Protobuf paket isimleri MAJOR versiyonu içerebilir (örn: package core/identity.v1;).
 
 Üretilen client/server SDK'ları SemVer ile versiyonlanır.
 
 Kanal/Topic Versiyonlama (AsyncAPI/Olaylar için):
 
-Olayların yayınlandığı kanallar/topic'ler MAJOR versiyonu içerebilir (örn: core.identity.user.v1.registered).
+Olayların yayınlandığı kanallar/topic'ler MAJOR versiyonu içerebilir (örn: core/identity.user.v1.registered).
 
 Olay payload şeması (Avro/Protobuf) kendi SemVer'ine sahip olabilir ve Schema Registry'de yönetilir.
 
@@ -315,9 +315,9 @@ B.4. Teknoloji Yığını (Tech Radar) – MVP ve Uzun Vadeli Evrim (Self-Hosted
 
 Bölüm C: Uygulama Blueprint’leri ve Geliştirme Süreçleri
 C.1. Anahtar Sınırlı Bağlam Blueprint’leri ("Örnek Mahalle İnşaat Planları")
-Bu bölümde, öncelikli olarak hayata geçirilecek Core.Identity, Voyago.Seyahat ve OmegaCommerce Sınırlı Bağlamları için detaylı "dikey dilim" uygulama blueprint'leri sunulacaktır. Her blueprint, "Önce Sözleşme" ilkesini takip eder ve maliyet-etkin başlangıç için self-hosted teknolojileri temel alır.
+Bu bölümde, öncelikli olarak hayata geçirilecek core/identity, Voyago.Seyahat ve OmegaCommerce Sınırlı Bağlamları için detaylı "dikey dilim" uygulama blueprint'leri sunulacaktır. Her blueprint, "Önce Sözleşme" ilkesini takip eder ve maliyet-etkin başlangıç için self-hosted teknolojileri temel alır.
 
-(Her bir Sınırlı Bağlam (Core.Identity, Voyago.Seyahat, OmegaCommerce) için v4.3.1, Bölüm 6.1, 6.2, 6.3'teki gibi detaylı API Sözleşme taslakları, İç Mikroservisler, Teknoloji Yığını ve Maliyet Alternatifleri (self-hosted vurgusuyla) ve Adım Adım İnşaat Planı (Dikey Dilim Uygulaması) buraya eksiksiz olarak eklenecektir. Özellikle Core.Identity için Kimlik Yönetimi Çözümü olarak ORY Hydra veya Keycloak (Kubernetes üzerinde self-hosted) ve Veritabanı olarak PostgreSQL HA Cluster (örn: Patroni ile K8s üzerinde) detaylandırılacaktır.)
+(Her bir Sınırlı Bağlam (core/identity, Voyago.Seyahat, OmegaCommerce) için v4.3.1, Bölüm 6.1, 6.2, 6.3'teki gibi detaylı API Sözleşme taslakları, İç Mikroservisler, Teknoloji Yığını ve Maliyet Alternatifleri (self-hosted vurgusuyla) ve Adım Adım İnşaat Planı (Dikey Dilim Uygulaması) buraya eksiksiz olarak eklenecektir. Özellikle core/identity için Kimlik Yönetimi Çözümü olarak ORY Hydra veya Keycloak (Kubernetes üzerinde self-hosted) ve Veritabanı olarak PostgreSQL HA Cluster (örn: Patroni ile K8s üzerinde) detaylandırılacaktır.)
 
 C.2. CI/CD & Sözleşme Odaklı Süreçler ("Otomatik İnşaat, Denetim ve Ruhsat Sistemi")
 (v4.3.1, Bölüm 7'deki içerik, özellikle self-hosted GitHub Actions runner'lar, açık kaynak test araçları (Pact CLI, Schemathesis CLI), Pact Broker (veya benzeri bir sözleşme doğrulama aracı) ve CI pipeline'ına entegre edilmiş sözleşme geçerlilik adımları ile maliyet etkin başlangıç vurgulanarak buraya eksiksiz olarak eklenecektir.)

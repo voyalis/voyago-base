@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: auth-db-migration-job
+  labels:
+    app: voyago-authservice
+    component: db-migration
+  annotations:
+    "helm.sh/hook": "pre-install,pre-upgrade"
+    "helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded"
+spec:
+  # Hata ayıklama sürecinde silinmeden önce log görebilmek için ttlSecondsAfterFinished ekledik.
+  ttlSecondsAfterFinished: 300  
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate-auth-db-container
+          image: authservice               # Kustomize → Skaffold bunu “authservice:<TAG>” olarak güncelleyecek.
+          imagePullPolicy: IfNotPresent
+          workingDir: /app
+          command: ["/app/migrate"]
+          args:
+            - "-path=/app/migrations"
+            - "-database"
+            - "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres-auth-svc:5432/$(POSTGRES_DB)?sslmode=disable"
+            - "up"
+          envFrom:
+            - configMapRef:
+                name: postgres-auth-config
+            - secretRef:
+                name: postgres-auth-secret

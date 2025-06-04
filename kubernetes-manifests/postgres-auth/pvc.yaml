@@ -12,3 +12,4 @@ spec:
   resources:
     requests:
       storage: 1Gi # Minikube için başlangıçta yeterli, ihtiyaca göre artırılabilir
+ 

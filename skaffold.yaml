@@ -5,29 +5,35 @@ metadata:
 
 build:
   tagPolicy:
-    gitCommit: {}
+    gitCommit: {}     # Git commit hash’i ile etiketler
   local:
-    push: false
+    push: false       # Minikube kullandığımız için push = false
   artifacts:
-    - image: auth-service
-      context: .
+    - image: authservice
+      context: .      # Proje kökünde Dockerfile var
       docker:
-        dockerfile: src/core.identity/authservice/Dockerfile
+        dockerfile: src/core/identity/authservice/Dockerfile
 
 profiles:
   - name: omega-x-dev-platform
     deploy:
+      # ─────────────────────────────────────────────────────────────
+      # 1) DÜZ YAML’LARI kubectl ile apply et
       kubectl:
         manifests:
-          # AuthService + Postgres
           - kubernetes-manifests/postgres-auth/configmap.yaml
           - kubernetes-manifests/postgres-auth/secret.yaml
           - kubernetes-manifests/postgres-auth/pvc.yaml
           - kubernetes-manifests/postgres-auth/deployment.yaml
           - kubernetes-manifests/postgres-auth/service.yaml
           - kubernetes-manifests/auth-jwt-secret.yaml
-          - kubernetes-manifests/auth-migration-job.yaml
-          - kubernetes-manifests/authservice.yaml
+
+      # ─────────────────────────────────────────────────────────────
+      # 2) KUSTOMIZE KLASÖRLERİNİ ayrı blokta tanımla
+      kustomize:
+        paths:
+          - kubernetes-manifests/kustomize/auth-migration-job
+          - kubernetes-manifests/kustomize/authservice
 
       helm:
         releases:
@@ -38,39 +44,46 @@ profiles:
             namespace: voyago-infra
             createNamespace: true
             wait: true
+            # timeout: "Xm" # v2beta29'da bu alan yok
 
           - name: voyago-kong
             chartPath: kubernetes-manifests/charts/kong
             valuesFiles:
               - kubernetes-manifests/helm-values/kong/kong-mvp-values.yaml
             namespace: voyago-infra
-            createNamespace: false
+            createNamespace: false 
             wait: true
+            # timeout: "15m" # v2beta29'da bu alan yok
 
           - name: voyago-redis
             chartPath: kubernetes-manifests/charts/redis
             valuesFiles:
               - kubernetes-manifests/helm-values/redis/redis-mvp-values.yaml
             namespace: voyago-infra
-            createNamespace: false   # zaten infra yarattık
+            createNamespace: false
             wait: true
+            # timeout: "Xm" # v2beta29'da bu alan yok
 
-          - name: voyago-observability
+          - name: voyago-observability 
             chartPath: kubernetes-manifests/charts/kube-prometheus-stack
             valuesFiles:
               - kubernetes-manifests/helm-values/observability/prometheus-grafana-mvp-values.yaml
             namespace: voyago-monitoring
             createNamespace: true
             wait: true
+            # timeout: "15m" # v2beta29'da bu alan yok
+            skipBuildDependencies: true 
 
           - name: voyago-observability-loki
             chartPath: kubernetes-manifests/charts/loki-stack
             valuesFiles:
               - kubernetes-manifests/helm-values/observability/loki-mvp-values.yaml
             namespace: voyago-monitoring
-            createNamespace: false   # namespace’i bir önceki adımda oluşturduk
+            createNamespace: false 
             wait: true
-
+            # timeout: "10m" # v2beta29'da bu alan yok
+            skipBuildDependencies: true 
+            
           - name: voyago-tempo
             chartPath: kubernetes-manifests/charts/tempo
             valuesFiles:
@@ -78,17 +91,18 @@ profiles:
             namespace: voyago-monitoring
             createNamespace: false
             wait: true
-            skipBuildDependencies: true
+            # timeout: "10m" # v2beta29'da bu alan yok
+            skipBuildDependencies: true 
             
           - name: voyago-otel-collector
             chartPath: kubernetes-manifests/charts/opentelemetry-collector
             valuesFiles:
               - kubernetes-manifests/helm-values/observability/otel-collector-mvp-values.yaml
             namespace: voyago-monitoring
-            createNamespace: false   # zaten namespace var
+            createNamespace: false 
             wait: true
-            skipBuildDependencies: true
-
+            # timeout: "10m" # v2beta29'da bu alan yok
+            skipBuildDependencies: true 
 
     portForward:
       - resourceType: service
@@ -110,58 +124,55 @@ profiles:
         localPort: 42220
       
       - resourceType: service
-        resourceName: voyago-kong-kong-proxy # Bu ismi kubectl get svc -n voyago-infra ile teyit etmiştik
+        resourceName: voyago-kong-kong-proxy
         namespace: voyago-infra
-        port: 8000 # Kong proxy HTTP portu (values.yaml'daki servicePort)
+        port: 8000
         localPort: 8000
       
       - resourceType: service
-        resourceName: voyago-kong-kong-admin # Kong admin API servisi
+        resourceName: voyago-kong-kong-admin
         namespace: voyago-infra
-        port: 8001 # Kong admin API portu
+        port: 8001
         localPort: 8001
       
       - resourceType: service
         resourceName: voyago-redis-master
         namespace: voyago-infra
         port: 6379
-        localPort: 16379 # Redis için
-      
-      # GÖZLEMLENEBİLİRLİK PORT FORWARD'LARI
-      - resourceType: service
-        resourceName: voyago-observability-grafana # Grafana servisi
-        namespace: voyago-monitoring
-        port: 80       # Grafana servisinin cluster içindeki portu (genellikle 80)
-        localPort: 3000  # Yerelde Grafana'ya erişeceğimiz port
+        localPort: 16379
       
       - resourceType: service
-        resourceName: voyago-observability-kube-prometheus # Prometheus servisi
+        resourceName: voyago-observability-grafana
         namespace: voyago-monitoring
-        port: 9090     # Prometheus servisinin portu
-        localPort: 9090  # Yerelde Prometheus'a erişeceğimiz port
+        port: 80
+        localPort: 3000
       
       - resourceType: service
-        resourceName: voyago-observability-kube-alertmanager # Alertmanager servisi
+        resourceName: voyago-observability-kube-prometheus
         namespace: voyago-monitoring
-        port: 9093     # Alertmanager servisinin portu
-        localPort: 9093  # Yerelde Alertmanager'a erişeceğimiz port
+        port: 9090
+        localPort: 9090
       
       - resourceType: service
-        resourceName: voyago-tempo # Tempo query frontend servisi
+        resourceName: voyago-observability-kube-alertmanager
         namespace: voyago-monitoring
-        # Tempo chart'ının query frontend için hangi portu kullandığını teyit et (genellikle 3100 veya 3200)
-        # kubectl get svc voyago-tempo -n voyago-monitoring çıktısında 3100/TCP görünüyor.
-        port: 3100     # Tempo query frontend portu
-        localPort: 32000 # Yerelde Tempo'ya erişeceğimiz port (Grafana bağlantısı için)
+        port: 9093
+        localPort: 9093
       
       - resourceType: service
-        resourceName: voyago-otel-collector-opentelemetry-collector # OTel Collector servisi
+        resourceName: voyago-tempo
         namespace: voyago-monitoring
-        port: 4317     # OTLP gRPC portu
-        localPort: 43170 # Yereldeki port (0'ı ekledim karışmasın diye)
+        port: 3100
+        localPort: 32000
       
       - resourceType: service
         resourceName: voyago-otel-collector-opentelemetry-collector
         namespace: voyago-monitoring
-        port: 4318     # OTLP HTTP portu
+        port: 4317 # OTLP gRPC
+        localPort: 43170
+      
+      - resourceType: service
+        resourceName: voyago-otel-collector-opentelemetry-collector
+        namespace: voyago-monitoring
+        port: 4318 # OTLP HTTP
         localPort: 43180

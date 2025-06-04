@@ -67,7 +67,7 @@ nav:
   - "📜 API & Olay Sözleşmeleri":
     - "İsimlendirme ve Sürümleme": contracts/CONTRACT_NAMING_CONVENTIONS.md
     # Buraya Sınırlı Bağlam bazlı sözleşme linkleri eklenecek:
-    # - "Core.Identity API v1": contracts/core.identity/openapi/v1/core_identity.openapi.yaml
+    # - "core/identity API v1": contracts/core/identity/openapi/v1/core_identity.openapi.yaml
     # - "Seyahat Olayları v1": contracts/voyago.seyahat/asyncapi/v1/seyahat_events.asyncapi.yaml
   - "📚 Eski Dokümanlar (Arşiv)":
     # docs/legacy altındaki dosyalar buraya eklenebilir veya bu bölüm kaldırılabilir.

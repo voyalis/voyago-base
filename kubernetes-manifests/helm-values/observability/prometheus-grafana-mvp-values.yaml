@@ -59,6 +59,6 @@ prometheus-node-exporter:
       cpu: 200m
       memory: 256Mi
 
-# Helm testlerini devre dışı bırak
-tests:
-  enabled: false
+  # Helm testlerini devre dışı bırak
+  tests:
+    enabled: false
