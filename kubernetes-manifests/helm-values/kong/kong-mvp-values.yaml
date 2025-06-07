@@ -1,4 +1,4 @@
-# Kong Helm Chart için MVP values
+# Kong Helm Chart için MVP values , /voyago-base/kubernetes-manifests/helm-values/kong/kong-mvp-values.yaml
 
 # 1) Image
 image:

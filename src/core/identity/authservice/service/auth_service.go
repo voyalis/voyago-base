@@ -14,6 +14,7 @@ import (
 
 	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -107,63 +108,83 @@ func generateSecureRandomToken(length int) (string, error) {
     return base64.URLEncoding.EncodeToString(tokenBytes), nil
 }
 
+// src/core/identity/authservice/service/auth_service.go
+
 // Register
 func (s *AuthServiceServer) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.RegisterResponse, error) {
-    slog.InfoContext(ctx, "Service: Register request", "email", req.Email, "fullName", req.FullName)
+    // ── Alt‐span başlat (yalnızca başarılı akış için trace oluşturuyoruz):
+    tracer := otel.Tracer("authservice-service")
+    ctxOp, spanOp := tracer.Start(ctx, "Register-op")
+    defer spanOp.End()
+    // ────────────────────────────────────────────────────────────────────
+
+    // Artık ctxOp üzerinden log ve repo çağrıları yapın:
+    slog.InfoContext(ctxOp, "Service: Register request", "email", req.Email, "fullName", req.FullName)
+
     if req.Email == "" || req.Password == "" {
-        slog.WarnContext(ctx, "Service: Register failed - missing email or password", "email", req.Email)
+        slog.WarnContext(ctxOp, "Service: Register failed - missing email or password", "email", req.Email)
         return nil, status.Errorf(codes.InvalidArgument, "Email and password are required")
     }
     if len(req.Password) < 8 {
-        slog.WarnContext(ctx, "Service: Register failed - password too short", "email", req.Email)
+        slog.WarnContext(ctxOp, "Service: Register failed - password too short", "email", req.Email)
         return nil, status.Errorf(codes.InvalidArgument, "Password must be at least 8 characters long")
     }
 
     hashedPassword, err := hashPassword(req.Password)
     if err != nil {
-        slog.ErrorContext(ctx, "Service: Error hashing password", "email", req.Email, "error", err.Error())
+        slog.ErrorContext(ctxOp, "Service: Error hashing password", "email", req.Email, "error", err.Error())
         return nil, status.Errorf(codes.Internal, "Failed to process password")
     }
 
-    createdUser, err := s.userRepo.CreateUser(ctx, req.Email, hashedPassword, req.FullName)
+    createdUser, err := s.userRepo.CreateUser(ctxOp, req.Email, hashedPassword, req.FullName)
     if err != nil {
         if strings.Contains(err.Error(), "already exists") {
-            slog.WarnContext(ctx, "Service: Registration conflict", "email", req.Email, "error", err.Error())
+            slog.WarnContext(ctxOp, "Service: Registration conflict", "email", req.Email, "error", err.Error())
             return nil, status.Errorf(codes.AlreadyExists, err.Error())
         }
-        slog.ErrorContext(ctx, "Service: User creation failed", "email", req.Email, "error", err.Error())
+        slog.ErrorContext(ctxOp, "Service: User creation failed", "email", req.Email, "error", err.Error())
         return nil, status.Errorf(codes.Internal, "Failed to register user")
     }
 
-    userInfo, err := s.userRepo.GetUserByID(ctx, createdUser.ID)
+    userInfo, err := s.userRepo.GetUserByID(ctxOp, createdUser.ID)
     if err != nil {
-        slog.ErrorContext(ctx, "Service: Registered but failed to fetch details", "userID", createdUser.ID.String(), "error", err.Error())
+        slog.ErrorContext(ctxOp, "Service: Registered but failed to fetch details", "userID", createdUser.ID.String(), "error", err.Error())
         return nil, status.Errorf(codes.Internal, "User registered but failed to retrieve details")
     }
 
-    slog.InfoContext(ctx, "Service: User registered successfully", "userID", userInfo.UserId, "email", userInfo.Email)
+    slog.InfoContext(ctxOp, "Service: User registered successfully", "userID", userInfo.UserId, "email", userInfo.Email)
     return &pb.RegisterResponse{User: userInfo, Message: "User registered successfully"}, nil
 }
 
+
+// src/core/identity/authservice/service/auth_service.go
+
 // Login
 func (s *AuthServiceServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginResponse, error) {
-    slog.InfoContext(ctx, "Service: Login attempt", "email", req.Email)
+    // ── Alt‐span başlat:
+    tracer := otel.Tracer("authservice-service")
+    ctxOp, spanOp := tracer.Start(ctx, "Login-op")
+    defer spanOp.End()
+    // ────────────────────────────────────────────────────
+
+    slog.InfoContext(ctxOp, "Service: Login attempt", "email", req.Email)
+
     if req.Email == "" || req.Password == "" {
-        slog.WarnContext(ctx, "Service: Login failed - missing email or password", "email", req.Email)
+        slog.WarnContext(ctxOp, "Service: Login failed - missing email or password", "email", req.Email)
         return nil, status.Errorf(codes.InvalidArgument, "Email and password are required")
     }
 
-    userInfo, storedHash, isActive, err := s.userRepo.GetUserByEmail(ctx, req.Email)
+    userInfo, storedHash, isActive, err := s.userRepo.GetUserByEmail(ctxOp, req.Email)
     if err != nil {
-        slog.WarnContext(ctx, "Service: Login failed - GetUserByEmail", "email", req.Email, "error", err.Error())
+        slog.WarnContext(ctxOp, "Service: Login failed - GetUserByEmail", "email", req.Email, "error", err.Error())
         return nil, status.Errorf(codes.Unauthenticated, "Invalid email or password")
     }
     if !isActive {
-        slog.WarnContext(ctx, "Service: Login blocked - inactive", "userID", userInfo.UserId, "email", req.Email)
+        slog.WarnContext(ctxOp, "Service: Login blocked - inactive", "userID", userInfo.UserId, "email", req.Email)
         return nil, status.Errorf(codes.PermissionDenied, "User account is disabled")
     }
     if !checkPasswordHash(req.Password, storedHash) {
-        slog.WarnContext(ctx, "Service: Login failed - wrong password", "userID", userInfo.UserId, "email", req.Email)
+        slog.WarnContext(ctxOp, "Service: Login failed - wrong password", "userID", userInfo.UserId, "email", req.Email)
         return nil, status.Errorf(codes.Unauthenticated, "Invalid email or password")
     }
 
@@ -179,28 +200,28 @@ func (s *AuthServiceServer) Login(ctx context.Context, req *pb.LoginRequest) (*p
     accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
     signedAccessToken, err := accessToken.SignedString(s.jwtSecret)
     if err != nil {
-        slog.ErrorContext(ctx, "Service: Error signing access token", "userID", userInfo.UserId, "error", err.Error())
+        slog.ErrorContext(ctxOp, "Service: Error signing access token", "userID", userInfo.UserId, "error", err.Error())
         return nil, status.Errorf(codes.Internal, "Could not generate access token")
     }
 
     rawRefreshToken, err := generateSecureRandomToken(32)
     if err != nil {
-        slog.ErrorContext(ctx, "Service: Error generating raw refresh token", "userID", userInfo.UserId, "error", err.Error())
+        slog.ErrorContext(ctxOp, "Service: Error generating raw refresh token", "userID", userInfo.UserId, "error", err.Error())
         return nil, status.Errorf(codes.Internal, "Could not generate refresh token")
     }
     hashedRefreshToken := hashToken(rawRefreshToken)
     refreshExp := time.Now().Add(refreshTokenExpiryDuration)
     parsedUserID, _ := uuid.Parse(userInfo.UserId)
 
-    if err := s.userRepo.StoreRefreshToken(ctx, parsedUserID, hashedRefreshToken, refreshExp); err != nil {
-        slog.ErrorContext(ctx, "Service: Failed to store refresh token", "userID", userInfo.UserId, "error", err.Error())
+    if err := s.userRepo.StoreRefreshToken(ctxOp, parsedUserID, hashedRefreshToken, refreshExp); err != nil {
+        slog.ErrorContext(ctxOp, "Service: Failed to store refresh token", "userID", userInfo.UserId, "error", err.Error())
         return nil, status.Errorf(codes.Internal, "Could not complete login process (token storage)")
     }
-    if err := s.userRepo.UpdateUserLastSignInAt(ctx, parsedUserID); err != nil {
-        slog.WarnContext(ctx, "Service: Failed to update last_sign_in_at", "userID", userInfo.UserId, "error", err.Error())
+    if err := s.userRepo.UpdateUserLastSignInAt(ctxOp, parsedUserID); err != nil {
+        slog.WarnContext(ctxOp, "Service: Failed to update last_sign_in_at", "userID", userInfo.UserId, "error", err.Error())
     }
 
-    slog.InfoContext(ctx, "Service: Login successful", "userID", userInfo.UserId, "email", userInfo.Email)
+    slog.InfoContext(ctxOp, "Service: Login successful", "userID", userInfo.UserId, "email", userInfo.Email)
     return &pb.LoginResponse{
         User:         userInfo,
         AccessToken:  signedAccessToken,
@@ -208,6 +229,7 @@ func (s *AuthServiceServer) Login(ctx context.Context, req *pb.LoginRequest) (*p
         ExpiresIn:    int32(time.Until(accessExp).Seconds()),
     }, nil
 }
+
 
 // ValidateToken
 func (s *AuthServiceServer) ValidateToken(ctx context.Context, req *pb.ValidateTokenRequest) (*pb.ValidateTokenResponse, error) {

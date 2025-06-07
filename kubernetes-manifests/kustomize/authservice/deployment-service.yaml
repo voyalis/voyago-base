@@ -101,15 +101,15 @@ spec:
           readinessProbe:
             grpc:
               port: 50051
-            initialDelaySeconds: 25
-            periodSeconds: 10
+            initialDelaySeconds: 35
+            periodSeconds: 30
             failureThreshold: 3
           livenessProbe:
             grpc:
               port: 50051
               # service: ""
-            initialDelaySeconds: 35
-            periodSeconds: 20
+            initialDelaySeconds: 45
+            periodSeconds: 40
             failureThreshold: 3
           resources:
             requests:

@@ -384,4 +384,4 @@ F.2. Örnek API Sözleşme Şablonları
 F.3. Örnek Mimari Karar Kaydı (ADR) Şablonu
 (Bir ADR'nin hangi başlıkları içermesi gerektiğine (Başlık, Durum, Bağlam, Karar, Gerekçe, Sonuçlar, Artılar, Eksiler, Değerlendirilen Alternatifler) dair bir şablon.)
 
-Bu VoyaGo Omega X – Kapsamlı Mimari, Teknoloji ve Maliyet Kılavuzu v4.3.2 (Nihai Onaylanmış Versiyon), projemizin mevcut "İkili Çekirdek Ekip + AI Danışmanlar" yapısına, "maliyetsiz başlangıç" ve "vendor lock-free" hedeflerine tam olarak uyarlanmış, son derece detaylı ve uygulanabilir bir rehberdir.
+Bu VoyaGo Omega X – Kapsamlı Mimari, Teknoloji ve Maliyet Kılavuzu v4.3.2 (Nihai Onaylanmış Versiyon), projemizin mevcut "Tek Çekirdek Ekip + AI Danışmanlar(Gemini + ChatGpt + Deepseek)" yapısına, "maliyetsiz başlangıç" ve "vendor lock-free" hedeflerine tam olarak uyarlanmış, son derece detaylı ve uygulanabilir bir rehberdir.

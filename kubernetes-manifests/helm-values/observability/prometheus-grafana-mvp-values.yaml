@@ -1,26 +1,20 @@
-# Prometheus & Grafana için Minikube dostu MVP ayarları
+# kubernetes-manifests/helm-values/observability/prometheus-grafana-mvp-values.yaml
 
 prometheus:
+  enabled: true
   prometheusSpec:
-    # CPU ve bellek kaynakları (Minikube’da ayağa kalkması için düşük tutuldu)
     resources:
       requests:
         cpu: 200m
         memory: 512Mi
       limits:
-        cpu: "1"
+        cpu: "1" 
         memory: "1.5Gi"
-    # (İsterseniz) retention veya storageSpec ayarları ekleyebilirsiniz:
-    # retention: "1d"
-    # storageSpec:
-    #   volumeClaimTemplate:
-    #     spec:
-    #       resources:
-    #         requests:
-    #           storage: 5Gi
-
+    retention: "7d" 
+    
 grafana:
-  # Grafana pod’unun kaynak talepleri
+  enabled: true
+  adminPassword: "VoyaGoSuperAdmin123!" 
   resources:
     requests:
       cpu: 100m
@@ -28,8 +22,8 @@ grafana:
     limits:
       cpu: 500m
       memory: 512Mi
-  # Geçici admin parolası (production’da Secret ile yönetin)
-  adminPassword: "VoyaGoSuperAdmin123!"
+  
+  
 
 alertmanager:
   alertmanagerSpec:
