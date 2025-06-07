@@ -55,6 +55,10 @@ spec:
           ports:
             - containerPort: 50051
               name: grpc
+
+            - containerPort: 9090
+              name: prometheus
+
           env:
             - name: PORT
               value: "50051"
@@ -136,4 +140,9 @@ spec:
     - name: grpc
       port: 50051
       targetPort: 50051
+      protocol: TCP
+
+    - name: prometheus
+      port: 9090
+      targetPort: 9090
       protocol: TCP

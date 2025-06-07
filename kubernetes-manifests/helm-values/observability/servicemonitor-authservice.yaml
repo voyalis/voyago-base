@@ -1,0 +1,18 @@
+# deploy/observability/servicemonitor-authservice.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: authservice
+  namespace: voyago-monitoring
+  labels:
+    release: voyago-observability
+spec:
+  selector:
+    matchLabels:
+      app: authservice
+  namespaceSelector:
+    matchNames:
+      - default
+  endpoints:
+    - port: prometheus        # Deployment’daki containerPort name: prometheus
+      interval: 15s

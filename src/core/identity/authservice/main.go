@@ -14,9 +14,11 @@ import (
 	"time"
 
 	// OpenTelemetry Paketleri
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace" // OTel SDK Trace, InitTraceProvider dönüş tipi için
 	"go.opentelemetry.io/otel/trace"              // loggingInterceptorOtel için trace.SpanContextFromContext
+
+	grpcotel "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 
 	// Proje Paketleri
 	pb "github.com/voyalis/voyago-base/gen/go/core/identity/v1"
@@ -33,7 +35,14 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
+
 	// Rate limiter için
+
+	// Prometheus + HTTP
+	"net/http"
+
+	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const (
@@ -210,23 +219,32 @@ func main() {
 	}
 	ipRateLimiter := interceptor.NewIPRateLimiter(rlConfig)
 
-	// gRPC Server (OTel Interceptor'ları ile)
-	grpcServer := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(
-			otelgrpc.UnaryServerInterceptor(),      // 1. OTel trace için
-			loggingInterceptorOtel,                 // 2. Bizim log interceptor'ımız
-			ipRateLimiter.UnaryServerInterceptor(), // 3. Rate limiter
-		),
-		// Stream RPC'leriniz varsa:
-		// grpc.ChainStreamInterceptor(
-		// 	otelgrpc.StreamServerInterceptor(),
-		// ),
-	)
+	// Yeni OpenTelemetry gRPC handler’ı (deprecation yerine)
+   handler := grpcotel.NewServerHandler(
+       grpcotel.WithTracerProvider(otel.GetTracerProvider()),
+       grpcotel.WithPropagators(otel.GetTextMapPropagator()),
+   )
 
+	// gRPC Server (Prometheus + OTel(stats handler) + Log + Rate Limiter) interceptors
+	grpcServer := grpc.NewServer(
+		// 1) OTel yeni API ile gelen stats handler
+		grpc.StatsHandler(handler),
+		grpc.ChainUnaryInterceptor(
+			grpc_prometheus.UnaryServerInterceptor,  // 2. Prometheus metrics interceptor
+			loggingInterceptorOtel,                  // 3. JSON log interceptor
+			ipRateLimiter.UnaryServerInterceptor(),  // 4. Rate limiter interceptor
+    ),
+
+)
 	// Repository ve Service ayarları
 	userRepo := repository.NewUserRepo(db.DB)
-	authSvcServer := service.NewAuthServiceServer(userRepo, *jwtSecret, rlConfig)
-	pb.RegisterAuthServiceServer(grpcServer, authSvcServer)
+	authSvc := service.NewAuthServiceServer(userRepo, *jwtSecret, rlConfig)
+	pb.RegisterAuthServiceServer(grpcServer, authSvc)
+	
+	// → AuthService için “handled” metriklerini toplamak üzere register et
+	grpc_prometheus.EnableHandlingTimeHistogram()
+	grpc_prometheus.Register(grpcServer)
+
 
 	// Healthcheck ve reflection
 	healthServer := health.NewServer()
@@ -236,34 +254,32 @@ func main() {
 
 	reflection.Register(grpcServer)
 
-	// Graceful shutdown için sinyal dinleme
-	stopChan := make(chan os.Signal, 1)
-	signal.Notify(stopChan, syscall.SIGINT, syscall.SIGTERM)
-
+	// ---------------------------- BEGIN Prometheus HTTP Endpoint ----------------------------
 	go func() {
-		s := <-stopChan
-		slog.Info("Shutdown sinyali alındı.", "signal", s.String())
-		slog.Info("gRPC sunucusu kapatılıyor (GracefulStop)...")
-		
-		// Sunucuyu kapatmak için bir timeout belirleyelim
-		shutdownGraceCtx, RpcCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer RpcCancel()
-		
-		go func() {
-			defer RpcCancel() // GracefulStop tamamlandığında veya timeout olduğunda context'i iptal et
-			grpcServer.GracefulStop() 
-		}()
-
-		<-shutdownGraceCtx.Done() // GracefulStop'un bitmesini veya timeout'u bekle
-
-		slog.Info("gRPC sunucusu durduruldu.")
-		cancel() // Ana context'i iptal ederek OTel provider'ının da kapanmasını tetikle (ve diğer go-routine'ler)
+		// “/metrics” path’ine gelen istekleri promhttp.Handler() ile karşıla
+		http.Handle("/metrics", promhttp.Handler())
+		// 9090 portunda dinleyecek
+		if err := http.ListenAndServe(":9090", nil); err != nil {
+			slog.Error("Prometheus metrics endpoint error", "error", err)
+		}
 	}()
+	// ----------------------------- END Prometheus HTTP Endpoint -----------------------------
 
-	slog.Info("gRPC sunucusu dinlemede.", "address", lis.Addr().String())
-	if err := grpcServer.Serve(lis); err != nil && err != grpc.ErrServerStopped {
-		slog.Error("gRPC Serve hatası", "error", err)
-		// os.Exit(1) // Graceful shutdown varsa, burada doğrudan çıkış yapmak yerine main'in bitmesini bekleyebiliriz.
-	}
-	slog.Info("AuthService uygulaması sonlandırıldı.")
+	// Graceful shutdown ve Serve tek bir blokta
+   stopChan := make(chan os.Signal, 1)
+   signal.Notify(stopChan, syscall.SIGINT, syscall.SIGTERM)
+
+   go func() {
+       s := <-stopChan
+       slog.Info("Shutdown sinyali alındı.", "signal", s.String())
+       grpcServer.GracefulStop()
+       cancel()
+   }()
+
+   slog.Info("gRPC sunucusu dinlemede.", "address", lis.Addr().String())
+   if err := grpcServer.Serve(lis); err != nil && err != grpc.ErrServerStopped {
+       slog.Error("gRPC Serve hatası", "error", err)
+   }
+   slog.Info("AuthService uygulaması sonlandırıldı.")
+	
 }
