@@ -23,7 +23,7 @@ COPY src/core/identity/authservice/migrations /app/migrations
 
 # 6) AuthService'i derle
 RUN CGO_ENABLED=0 GOOS=linux go build -v -o /app/authservice \
-      ./src/core/identity/authservice/main.go
+      ./src/core/identity/authservice/cmd/authservice/main.go
 
 # ---------- AŞAMA 2 (minimal çalışma imajı) ----------
 FROM alpine:3.19
