@@ -21,7 +21,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/voyalis/voyago-base/gen/go/core/identity/v1"
-	"github.com/voyalis/voyago-base/src/core/identity/authservice/interceptor"
+	"github.com/voyalis/voyago-base/src/core/identity/authservice/internal/interceptor"
 	"github.com/voyalis/voyago-base/src/core/identity/authservice/repository"
 )
 

@@ -1,4 +1,4 @@
-// src/core/identity/authservice/interceptor/interceptor.go
+// 4️⃣ interceptor/ratelimiter.go
 package interceptor
 
 import (
@@ -110,3 +110,4 @@ func (r *IPRateLimiter) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
 		return handler(ctx, req)
 	}
 }
+
